@@ -64,18 +64,28 @@ def main(args):
     std = train_df[args.property].std()
     print(f"Normalization: mean={mean:.4f}, std={std:.4f}")
 
+    # Get optimization settings
+    opt_config = config.get('optimization', {})
+    cache_tokenization = opt_config.get('cache_tokenization', False)
+    num_workers = opt_config.get('num_workers', 4)
+    pin_memory = opt_config.get('pin_memory', True)
+    prefetch_factor = opt_config.get('prefetch_factor', 2)
+
     # Create datasets
     train_dataset = PropertyDataset(
         train_df, tokenizer, args.property,
-        normalize=True, mean=mean, std=std
+        normalize=True, mean=mean, std=std,
+        cache_tokenization=cache_tokenization
     )
     val_dataset = PropertyDataset(
         val_df, tokenizer, args.property,
-        normalize=True, mean=mean, std=std
+        normalize=True, mean=mean, std=std,
+        cache_tokenization=cache_tokenization
     )
     test_dataset = PropertyDataset(
         test_df, tokenizer, args.property,
-        normalize=True, mean=mean, std=std
+        normalize=True, mean=mean, std=std,
+        cache_tokenization=cache_tokenization
     )
 
     # Create dataloaders
@@ -85,21 +95,27 @@ def main(args):
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=4
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=4
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=4
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
 
     # Load backbone

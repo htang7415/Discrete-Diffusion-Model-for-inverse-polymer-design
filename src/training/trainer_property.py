@@ -1,16 +1,34 @@
 """Trainer for property prediction heads."""
 
+import warnings
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.amp import autocast, GradScaler
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from tqdm import tqdm
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+
+def _to_float(value, name: str) -> float:
+    """Convert config value to float with a clear error on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be numeric, got {value!r} ({type(value).__name__})")
+
+
+def _to_int(value, name: str) -> int:
+    """Convert config value to int with a clear error on failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be integer-like, got {value!r} ({type(value).__name__})")
 
 
 class PropertyTrainer:
@@ -60,12 +78,30 @@ class PropertyTrainer:
         self.metrics_dir = self.step_dir / 'metrics'
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
+        # Optimization config
+        opt_config = config.get('optimization', {})
+        self.use_amp = opt_config.get('use_amp', False)
+        self.compile_model = opt_config.get('compile_model', False)
+        self.grad_accum_steps = opt_config.get('gradient_accumulation_steps', 1)
+
+        # Enable cuDNN benchmark for consistent input sizes
+        if opt_config.get('cudnn_benchmark', True):
+            torch.backends.cudnn.benchmark = True
+
+        # Mixed precision scaler
+        self.scaler = GradScaler(enabled=self.use_amp)
+
+        # Compile model for faster execution
+        if self.compile_model and device == 'cuda':
+            print("Compiling model with torch.compile()...")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
+
         # Training config
         train_config = config['training_property']
-        self.learning_rate = train_config['learning_rate']
-        self.weight_decay = train_config['weight_decay']
-        self.num_epochs = train_config['num_epochs']
-        self.patience = train_config['patience']
+        self.learning_rate = _to_float(train_config['learning_rate'], 'learning_rate')
+        self.weight_decay = _to_float(train_config['weight_decay'], 'weight_decay')
+        self.num_epochs = _to_int(train_config['num_epochs'], 'num_epochs')
+        self.patience = _to_int(train_config['patience'], 'patience')
 
         # Initialize optimizer
         self.optimizer = AdamW(
@@ -86,6 +122,7 @@ class PropertyTrainer:
         self.patience_counter = 0
         self.train_losses = []
         self.val_losses = []
+        self.global_step = 0
 
     def train(self) -> Dict:
         """Run training loop.
@@ -161,6 +198,7 @@ class PropertyTrainer:
             loss = self._train_step(batch)
             total_loss += loss
             num_batches += 1
+            self.global_step += 1
             pbar.set_postfix({'loss': f'{loss:.4f}'})
 
         return total_loss / max(num_batches, 1)
@@ -178,17 +216,21 @@ class PropertyTrainer:
         attention_mask = batch['attention_mask'].to(self.device)
         labels = batch['labels'].to(self.device)
 
-        self.optimizer.zero_grad()
+        # Forward pass with AMP
+        with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+            outputs = self.model.compute_loss(input_ids, labels, attention_mask)
+            loss = outputs['loss'] / self.grad_accum_steps
 
-        # Forward pass
-        outputs = self.model.compute_loss(input_ids, labels, attention_mask)
-        loss = outputs['loss']
+        # Backward pass with gradient scaling
+        self.scaler.scale(loss).backward()
 
-        # Backward pass
-        loss.backward()
-        self.optimizer.step()
+        # Only update weights every grad_accum_steps
+        if (self.global_step + 1) % self.grad_accum_steps == 0:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad()
 
-        return loss.item()
+        return loss.item() * self.grad_accum_steps
 
     def _validate(self) -> float:
         """Run validation.
@@ -206,7 +248,8 @@ class PropertyTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
 
-                outputs = self.model.compute_loss(input_ids, labels, attention_mask)
+                with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                    outputs = self.model.compute_loss(input_ids, labels, attention_mask)
                 total_loss += outputs['loss'].item()
                 num_batches += 1
 
@@ -228,7 +271,8 @@ class PropertyTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
 
-                preds = self.model.predict(input_ids, attention_mask)
+                with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                    preds = self.model.predict(input_ids, attention_mask)
                 all_preds.extend(preds.cpu().numpy().tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
 
@@ -348,7 +392,8 @@ class PropertyTrainer:
                 attention_mask = batch['attention_mask'].to(self.device)
                 labels = batch['labels'].to(self.device)
 
-                preds = self.model.predict(input_ids, attention_mask)
+                with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                    preds = self.model.predict(input_ids, attention_mask)
                 all_preds.extend(preds.cpu().numpy().tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
 

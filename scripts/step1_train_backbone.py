@@ -53,9 +53,16 @@ def main(args):
     train_df = pd.read_csv(results_dir / 'train_unlabeled.csv')
     val_df = pd.read_csv(results_dir / 'val_unlabeled.csv')
 
+    # Get optimization settings
+    opt_config = config.get('optimization', {})
+    cache_tokenization = opt_config.get('cache_tokenization', False)
+    num_workers = opt_config.get('num_workers', 4)
+    pin_memory = opt_config.get('pin_memory', True)
+    prefetch_factor = opt_config.get('prefetch_factor', 2)
+
     # Create datasets
-    train_dataset = PolymerDataset(train_df, tokenizer)
-    val_dataset = PolymerDataset(val_df, tokenizer)
+    train_dataset = PolymerDataset(train_df, tokenizer, cache_tokenization=cache_tokenization)
+    val_dataset = PolymerDataset(val_df, tokenizer, cache_tokenization=cache_tokenization)
 
     # Create dataloaders
     batch_size = config['training_backbone']['batch_size']
@@ -64,16 +71,18 @@ def main(args):
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
 
     print(f"Train batches: {len(train_loader)}")

@@ -31,10 +31,10 @@ tokenizer:
 
 # Backbone model (GPT-2-small-like)
 backbone:
-  hidden_size: 768
-  num_layers: 12
-  num_heads: 12
-  ffn_hidden_size: 3072
+  hidden_size: 256 # 768
+  num_layers: 4    # 12
+  num_heads: 4     # 12
+  ffn_hidden_size: 1024  # 3072
   dropout: 0.1
   max_position_embeddings: 256
 
@@ -55,7 +55,7 @@ diffusion:
 
 # Training backbone
 training_backbone:
-  batch_size: 256
+  batch_size: 512
   learning_rate: 3e-4
   weight_decay: 0.01
   warmup_steps: 1000
@@ -63,17 +63,28 @@ training_backbone:
   gradient_clip_norm: 1.0
   eval_every: 1000
   save_every: 10000
-  num_epochs: 50
+  num_epochs: 100
 
 # Training property heads
 training_property:
-  batch_size: 32
+  batch_size: 256
   learning_rate: 1e-4
   weight_decay: 0.01
   num_epochs: 500
   patience: 10
   freeze_backbone: true
   finetune_last_layers: 2
+
+# Optimization settings for A100 GPU
+optimization:
+  use_amp: true                    # Mixed precision (BF16)
+  compile_model: true              # torch.compile()
+  gradient_accumulation_steps: 1   # Increase for larger effective batch
+  num_workers: 8                   # DataLoader workers
+  pin_memory: true                 # GPU memory pinning
+  cudnn_benchmark: true            # cuDNN autotuning
+  prefetch_factor: 2               # DataLoader prefetching
+  cache_tokenization: true         # Pre-tokenize dataset
 
 # Property head architecture
 property_head:

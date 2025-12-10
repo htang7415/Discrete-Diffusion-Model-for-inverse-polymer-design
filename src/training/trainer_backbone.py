@@ -1,16 +1,34 @@
 """Trainer for diffusion backbone model."""
 
 import os
+import warnings
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.amp import autocast, GradScaler
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, List
 from tqdm import tqdm
+
+
+def _to_float(value, name: str) -> float:
+    """Convert config value to float with a clear error on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be numeric, got {value!r} ({type(value).__name__})")
+
+
+def _to_int(value, name: str) -> int:
+    """Convert config value to int with a clear error on failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be integer-like, got {value!r} ({type(value).__name__})")
 
 
 class BackboneTrainer:
@@ -51,16 +69,37 @@ class BackboneTrainer:
         self.metrics_dir = self.step_dir / 'metrics'
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
+        # Optimization config
+        opt_config = config.get('optimization', {})
+        self.use_amp = opt_config.get('use_amp', False)
+        self.compile_model = opt_config.get('compile_model', False)
+        self.grad_accum_steps = opt_config.get('gradient_accumulation_steps', 1)
+
+        # Enable cuDNN benchmark for consistent input sizes
+        if opt_config.get('cudnn_benchmark', True):
+            torch.backends.cudnn.benchmark = True
+
+        # Suppress SequentialLR deprecation warning (PyTorch internal issue)
+        warnings.filterwarnings("ignore", message="The epoch parameter in `scheduler.step()`")
+
+        # Mixed precision scaler
+        self.scaler = GradScaler(enabled=self.use_amp)
+
+        # Compile model for faster execution
+        if self.compile_model and device == 'cuda':
+            print("Compiling model with torch.compile()...")
+            self.model = torch.compile(self.model, mode="reduce-overhead")
+
         # Training config
         train_config = config['training_backbone']
-        self.learning_rate = train_config['learning_rate']
-        self.weight_decay = train_config['weight_decay']
-        self.warmup_steps = train_config['warmup_steps']
-        self.max_steps = train_config['max_steps']
-        self.gradient_clip_norm = train_config['gradient_clip_norm']
-        self.eval_every = train_config['eval_every']
-        self.save_every = train_config['save_every']
-        self.num_epochs = train_config.get('num_epochs', 50)
+        self.learning_rate = _to_float(train_config['learning_rate'], 'learning_rate')
+        self.weight_decay = _to_float(train_config['weight_decay'], 'weight_decay')
+        self.warmup_steps = _to_int(train_config['warmup_steps'], 'warmup_steps')
+        self.max_steps = _to_int(train_config['max_steps'], 'max_steps')
+        self.gradient_clip_norm = _to_float(train_config['gradient_clip_norm'], 'gradient_clip_norm')
+        self.eval_every = _to_int(train_config['eval_every'], 'eval_every')
+        self.save_every = _to_int(train_config['save_every'], 'save_every')
+        self.num_epochs = _to_int(train_config.get('num_epochs', 50), 'num_epochs')
 
         # Initialize optimizer
         self.optimizer = AdamW(
@@ -190,26 +229,32 @@ class BackboneTrainer:
         input_ids = batch['input_ids'].to(self.device)
         attention_mask = batch['attention_mask'].to(self.device)
 
-        self.optimizer.zero_grad()
+        # Forward pass with AMP
+        with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+            outputs = self.model(input_ids, attention_mask)
+            loss = outputs['loss'] / self.grad_accum_steps
 
-        # Forward pass
-        outputs = self.model(input_ids, attention_mask)
-        loss = outputs['loss']
+        # Backward pass with gradient scaling
+        self.scaler.scale(loss).backward()
 
-        # Backward pass
-        loss.backward()
+        # Only update weights every grad_accum_steps
+        if (self.global_step + 1) % self.grad_accum_steps == 0:
+            # Unscale gradients for clipping
+            self.scaler.unscale_(self.optimizer)
 
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(),
-            self.gradient_clip_norm
-        )
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.gradient_clip_norm
+            )
 
-        # Optimizer step
-        self.optimizer.step()
-        self.scheduler.step()
+            # Optimizer step with scaler
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad()
+            self.scheduler.step()
 
-        return loss.item()
+        return loss.item() * self.grad_accum_steps
 
     def _validate(self) -> float:
         """Run validation.
@@ -226,7 +271,8 @@ class BackboneTrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
 
-                outputs = self.model(input_ids, attention_mask)
+                with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                    outputs = self.model(input_ids, attention_mask)
                 total_loss += outputs['loss'].item()
                 num_batches += 1
 
