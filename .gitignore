@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+results/
+Data/
+
+# 
+experiments*/
+Experiments*/
+
+*.md
+!README.md
+
+*.txt
+*.csv
+*.pkl
+*.pt
+*.png
+*.pdf
+*.svg
+*.eps
+*.tex
+*.log
+*.err
+*.out

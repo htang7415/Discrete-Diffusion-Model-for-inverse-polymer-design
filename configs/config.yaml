@@ -1,0 +1,106 @@
+# Configuration file for Inverse Polymer Design Pipeline
+
+# Paths
+paths:
+  data_dir: "Data"
+  polymer_file: "Data/Polymer/SMiPoly_polymers.gz"
+  property_dir: "Data/Property"
+  results_dir: "results"
+  checkpoints_dir: "results/checkpoints"
+  figures_dir: "results/figures"
+  metrics_dir: "results/metrics"
+
+# Data processing
+data:
+  random_seed: 42
+  unlabeled_train_ratio: 0.95
+  unlabeled_val_ratio: 0.05
+  property_train_ratio: 0.8
+  property_val_ratio: 0.1
+  property_test_ratio: 0.1
+
+# Tokenizer
+tokenizer:
+  special_tokens:
+    pad: "[PAD]"
+    mask: "[MASK]"
+    bos: "[BOS]"
+    eos: "[EOS]"
+    unk: "[UNK]"
+  max_length: 128
+
+# Backbone model (GPT-2-small-like)
+backbone:
+  hidden_size: 768
+  num_layers: 12
+  num_heads: 12
+  ffn_hidden_size: 3072
+  dropout: 0.1
+  max_position_embeddings: 256
+
+# Small proxy model for hyperparameter tuning
+proxy_backbone:
+  hidden_size: 256
+  num_layers: 4
+  num_heads: 4
+  ffn_hidden_size: 1024
+  dropout: 0.1
+  max_position_embeddings: 256
+
+# Diffusion
+diffusion:
+  num_steps: 100
+  beta_min: 0.05
+  beta_max: 0.95
+
+# Training backbone
+training_backbone:
+  batch_size: 256
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_steps: 30000
+  gradient_clip_norm: 1.0
+  eval_every: 1000
+  save_every: 10000
+  num_epochs: 50
+
+# Training property heads
+training_property:
+  batch_size: 32
+  learning_rate: 1e-4
+  weight_decay: 0.01
+  num_epochs: 500
+  patience: 10
+  freeze_backbone: true
+  finetune_last_layers: 2
+
+# Property head architecture
+property_head:
+  hidden_sizes: [256, 64]
+  dropout: 0.1
+
+# Sampling
+sampling:
+  num_samples: 5000
+  batch_size: 256
+  temperature: 1.0
+
+# Inverse design
+inverse_design:
+  num_candidates: 5000
+  epsilon: 30.0  # tolerance for property matching
+
+# Polymer classes (SMARTS patterns)
+polymer_classes:
+  polyimide: "[#6](=O)-[#7]-[#6](=O)"
+  polyester: "[#6](=O)-[#8]-[#6]"
+  polyamide: "[#6](=O)-[#7]-[#6]"
+  polyurethane: "[#8]-[#6](=O)-[#7]"
+  polyether: "[#6]-[#8]-[#6]"
+
+# Plotting
+plotting:
+  figure_size: [4.5, 4.5]
+  font_size: 12
+  dpi: 600
