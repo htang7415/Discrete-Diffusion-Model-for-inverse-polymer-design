@@ -254,28 +254,28 @@ class PolymerDataLoader:
             'unique_smiles': df['p_smiles'].nunique()
         }
 
-        # Length statistics
+        # Length statistics (round floats to 4 decimal places)
         lengths = df['p_smiles'].str.len()
-        stats['length_mean'] = lengths.mean()
-        stats['length_std'] = lengths.std()
-        stats['length_min'] = lengths.min()
-        stats['length_max'] = lengths.max()
+        stats['length_mean'] = round(float(lengths.mean()), 4)
+        stats['length_std'] = round(float(lengths.std()), 4)
+        stats['length_min'] = int(lengths.min())
+        stats['length_max'] = int(lengths.max())
 
-        # SA score statistics
+        # SA score statistics (round floats to 4 decimal places)
         if 'sa_score' in df.columns:
             sa = df['sa_score'].dropna()
-            stats['sa_mean'] = sa.mean()
-            stats['sa_std'] = sa.std()
-            stats['sa_min'] = sa.min()
-            stats['sa_max'] = sa.max()
+            stats['sa_mean'] = round(float(sa.mean()), 4)
+            stats['sa_std'] = round(float(sa.std()), 4)
+            stats['sa_min'] = round(float(sa.min()), 4)
+            stats['sa_max'] = round(float(sa.max()), 4)
 
-        # Property statistics
+        # Property statistics (round floats to 4 decimal places)
         if property_name and property_name in df.columns:
             prop = df[property_name].dropna()
-            stats[f'{property_name}_mean'] = prop.mean()
-            stats[f'{property_name}_std'] = prop.std()
-            stats[f'{property_name}_min'] = prop.min()
-            stats[f'{property_name}_max'] = prop.max()
+            stats[f'{property_name}_mean'] = round(float(prop.mean()), 4)
+            stats[f'{property_name}_std'] = round(float(prop.std()), 4)
+            stats[f'{property_name}_min'] = round(float(prop.min()), 4)
+            stats[f'{property_name}_max'] = round(float(prop.max()), 4)
 
         return stats
 

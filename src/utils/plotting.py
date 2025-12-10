@@ -47,10 +47,11 @@ class PlotUtils:
         title: Optional[str] = None,
         save_path: Optional[str] = None,
         bins: int = 50,
-        alpha: float = 0.6,
-        density: bool = False
+        alpha: float = 0.5,
+        density: bool = False,
+        style: str = 'stepfilled'
     ) -> plt.Figure:
-        """Create overlaid histogram plot.
+        """Create overlaid histogram plot with clear distinction between distributions.
 
         Args:
             data: List of data arrays to plot.
@@ -62,21 +63,41 @@ class PlotUtils:
             bins: Number of histogram bins.
             alpha: Transparency of bars.
             density: Whether to normalize histogram.
+            style: Histogram style ('stepfilled', 'step', 'bar').
 
         Returns:
             Matplotlib figure.
         """
         fig, ax = plt.subplots(figsize=self.figure_size)
 
-        colors = plt.cm.tab10(np.linspace(0, 1, len(data)))
+        # Use contrasting colors that are easy to distinguish
+        contrasting_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        colors = contrasting_colors[:len(data)]
+
+        # Compute common bin edges for fair comparison
+        all_data = np.concatenate([np.asarray(d) for d in data])
+        bin_edges = np.histogram_bin_edges(all_data, bins=bins)
+
         for d, label, color in zip(data, labels, colors):
-            ax.hist(d, bins=bins, alpha=alpha, label=label, color=color, density=density)
+            if style == 'step':
+                # Step histogram with thick lines, no fill
+                ax.hist(d, bins=bin_edges, histtype='step', linewidth=2,
+                        label=label, color=color, density=density)
+            elif style == 'stepfilled':
+                # Filled step histogram with edge
+                ax.hist(d, bins=bin_edges, histtype='stepfilled', alpha=alpha,
+                        label=label, color=color, density=density,
+                        edgecolor=color, linewidth=1.5)
+            else:
+                # Traditional bar histogram
+                ax.hist(d, bins=bin_edges, alpha=alpha, label=label, color=color,
+                        density=density, edgecolor='white', linewidth=0.5)
 
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         if title:
             ax.set_title(title)
-        ax.legend()
+        ax.legend(framealpha=0.9)
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()

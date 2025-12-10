@@ -23,7 +23,8 @@ class BackboneTrainer:
         val_dataloader: DataLoader,
         config: Dict,
         device: str = 'cuda',
-        output_dir: str = 'results'
+        output_dir: str = 'results',
+        step_dir: str = None
     ):
         """Initialize trainer.
 
@@ -33,7 +34,8 @@ class BackboneTrainer:
             val_dataloader: Validation data loader.
             config: Training configuration.
             device: Device for training.
-            output_dir: Output directory.
+            output_dir: Output directory for shared artifacts (checkpoints).
+            step_dir: Step-specific output directory for metrics/figures.
         """
         self.model = model.to(device)
         self.train_dataloader = train_dataloader
@@ -41,10 +43,13 @@ class BackboneTrainer:
         self.config = config
         self.device = device
         self.output_dir = Path(output_dir)
+        self.step_dir = Path(step_dir) if step_dir else self.output_dir
 
         # Create output directories
         self.checkpoint_dir = self.output_dir / 'checkpoints'
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_dir = self.step_dir / 'metrics'
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
         # Training config
         train_config = config['training_backbone']
@@ -273,17 +278,22 @@ class BackboneTrainer:
 
     def _save_history(self):
         """Save training history to CSV."""
+        # Round floats to 4 decimal places
+        rounded_train_losses = [round(loss, 4) for loss in self.train_losses]
+        rounded_learning_rates = [round(lr, 8) for lr in self.learning_rates]  # LR needs more precision
+        rounded_val_losses = [round(loss, 4) for loss in self.val_losses]
+
         # Create loss curve CSV
         history = {
             'step': list(range(len(self.train_losses))),
-            'train_loss': self.train_losses,
-            'learning_rate': self.learning_rates
+            'train_loss': rounded_train_losses,
+            'learning_rate': rounded_learning_rates
         }
 
         # Add validation losses at eval intervals
         val_steps = list(range(self.eval_every, len(self.train_losses) + 1, self.eval_every))
         history['val_step'] = val_steps[:len(self.val_losses)]
-        history['val_loss'] = self.val_losses
+        history['val_loss'] = rounded_val_losses
 
         # Save as DataFrame
         train_df = pd.DataFrame({
@@ -291,14 +301,14 @@ class BackboneTrainer:
             'train_loss': history['train_loss'],
             'learning_rate': history['learning_rate']
         })
-        train_df.to_csv(self.output_dir / 'metrics' / 'backbone_loss_curve.csv', index=False)
+        train_df.to_csv(self.metrics_dir / 'backbone_loss_curve.csv', index=False)
 
         if self.val_losses:
             val_df = pd.DataFrame({
                 'step': history['val_step'],
                 'val_loss': history['val_loss']
             })
-            val_df.to_csv(self.output_dir / 'metrics' / 'backbone_val_loss.csv', index=False)
+            val_df.to_csv(self.metrics_dir / 'backbone_val_loss.csv', index=False)
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint.

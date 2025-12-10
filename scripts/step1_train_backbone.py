@@ -33,8 +33,9 @@ def main(args):
 
     # Create output directories
     results_dir = Path(config['paths']['results_dir'])
-    metrics_dir = results_dir / 'metrics'
-    figures_dir = results_dir / 'figures'
+    step_dir = results_dir / 'step1_backbone'
+    metrics_dir = step_dir / 'metrics'
+    figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -122,7 +123,8 @@ def main(args):
         val_dataloader=val_loader,
         config=config,
         device=device,
-        output_dir=str(results_dir)
+        output_dir=str(results_dir),
+        step_dir=str(step_dir)
     )
 
     # Train

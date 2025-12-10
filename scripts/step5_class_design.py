@@ -35,8 +35,12 @@ def main(args):
 
     # Create output directories
     results_dir = Path(config['paths']['results_dir'])
-    metrics_dir = results_dir / 'metrics'
-    figures_dir = results_dir / 'figures'
+    step_name = f'step5_{args.polymer_class}'
+    if args.property:
+        step_name += f'_{args.property}'
+    step_dir = results_dir / step_name
+    metrics_dir = step_dir / 'metrics'
+    figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,7 +218,8 @@ def main(args):
                 ylabel='Count',
                 title=f'SA Score: Train vs {args.polymer_class}',
                 save_path=figures_dir / f'{args.polymer_class}_sa_hist.png',
-                bins=50
+                bins=50,
+                style='step'
             )
 
     # Joint SA histogram if applicable
@@ -230,7 +235,8 @@ def main(args):
                 ylabel='Count',
                 title=f'SA: Train vs {args.polymer_class} vs Joint',
                 save_path=figures_dir / f'{args.polymer_class}_{args.property}_joint_sa_hist.png',
-                bins=50
+                bins=50,
+                style='step'
             )
 
     print("\n" + "=" * 50)

@@ -224,13 +224,13 @@ class ClassGuidedDesigner:
         if show_progress:
             print(f"Class matches: {len(class_matches)}")
 
-        # Compute metrics
+        # Compute metrics (round floats to 4 decimal places)
         results = {
             "target_class": target_class,
             "n_generated": num_candidates,
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
-            "class_success_rate": len(class_matches) / len(valid_smiles) if valid_smiles else 0.0,
+            "class_success_rate": round(len(class_matches) / len(valid_smiles), 4) if valid_smiles else 0.0,
         }
 
         # Generative metrics on ALL generated samples (not just class matches)
@@ -326,35 +326,35 @@ class ClassGuidedDesigner:
         joint_hits_smiles = [s for s, h in zip(class_matches, joint_hits_mask) if h]
         joint_hits_predictions = predictions[joint_hits_mask]
 
-        # Compute metrics
+        # Compute metrics (round floats to 4 decimal places)
         results = {
             "target_class": target_class,
-            "target_value": target_value,
-            "epsilon": epsilon,
+            "target_value": round(target_value, 4),
+            "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
             "n_joint_hits": len(joint_hits_smiles),
-            "class_success_rate": len(class_matches) / len(valid_smiles) if valid_smiles else 0.0,
-            "joint_success_rate": len(joint_hits_smiles) / len(valid_smiles) if valid_smiles else 0.0,
-            "pred_mean_class": np.mean(predictions),
-            "pred_std_class": np.std(predictions),
-            "pred_mean_joint": np.mean(joint_hits_predictions) if len(joint_hits_predictions) > 0 else 0.0,
-            "pred_std_joint": np.std(joint_hits_predictions) if len(joint_hits_predictions) > 0 else 0.0,
+            "class_success_rate": round(len(class_matches) / len(valid_smiles), 4) if valid_smiles else 0.0,
+            "joint_success_rate": round(len(joint_hits_smiles) / len(valid_smiles), 4) if valid_smiles else 0.0,
+            "pred_mean_class": round(float(np.mean(predictions)), 4),
+            "pred_std_class": round(float(np.std(predictions)), 4),
+            "pred_mean_joint": round(float(np.mean(joint_hits_predictions)), 4) if len(joint_hits_predictions) > 0 else 0.0,
+            "pred_std_joint": round(float(np.std(joint_hits_predictions)), 4) if len(joint_hits_predictions) > 0 else 0.0,
         }
 
-        # SA statistics
+        # SA statistics (round to 4 decimal places)
         if class_matches:
             sa_class = [compute_sa_score(s) for s in class_matches]
             sa_class = [s for s in sa_class if s is not None]
-            results["sa_mean_class"] = np.mean(sa_class) if sa_class else 0.0
-            results["sa_std_class"] = np.std(sa_class) if sa_class else 0.0
+            results["sa_mean_class"] = round(float(np.mean(sa_class)), 4) if sa_class else 0.0
+            results["sa_std_class"] = round(float(np.std(sa_class)), 4) if sa_class else 0.0
 
         if joint_hits_smiles:
             sa_joint = [compute_sa_score(s) for s in joint_hits_smiles]
             sa_joint = [s for s in sa_joint if s is not None]
-            results["sa_mean_joint"] = np.mean(sa_joint) if sa_joint else 0.0
-            results["sa_std_joint"] = np.std(sa_joint) if sa_joint else 0.0
+            results["sa_mean_joint"] = round(float(np.mean(sa_joint)), 4) if sa_joint else 0.0
+            results["sa_std_joint"] = round(float(np.std(sa_joint)), 4) if sa_joint else 0.0
         else:
             results["sa_mean_joint"] = 0.0
             results["sa_std_joint"] = 0.0

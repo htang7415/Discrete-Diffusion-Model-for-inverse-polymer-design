@@ -24,6 +24,8 @@ from src.training.hyperparameter_tuning import BackboneTuner, PropertyHeadTuner
 def tune_backbone(args, config, device):
     """Tune backbone hyperparameters."""
     results_dir = Path(config['paths']['results_dir'])
+    step_dir = results_dir / 'step6_tuning'
+    step_dir.mkdir(parents=True, exist_ok=True)
 
     # Load tokenizer
     tokenizer = PSmilesTokenizer.load(results_dir / 'tokenizer.json')
@@ -43,7 +45,7 @@ def tune_backbone(args, config, device):
         tokenizer=tokenizer,
         config=config,
         device=device,
-        output_dir=str(results_dir / 'tuning')
+        output_dir=str(step_dir)
     )
 
     # Define parameter grid
@@ -69,6 +71,8 @@ def tune_backbone(args, config, device):
 def tune_property_head(args, config, device):
     """Tune property head hyperparameters."""
     results_dir = Path(config['paths']['results_dir'])
+    step_dir = results_dir / 'step6_tuning'
+    step_dir.mkdir(parents=True, exist_ok=True)
 
     # Load tokenizer
     tokenizer = PSmilesTokenizer.load(results_dir / 'tokenizer.json')
@@ -128,7 +132,7 @@ def tune_property_head(args, config, device):
         val_dataset=val_dataset,
         config=config,
         device=device,
-        output_dir=str(results_dir / 'tuning')
+        output_dir=str(step_dir)
     )
 
     # Define parameter grid

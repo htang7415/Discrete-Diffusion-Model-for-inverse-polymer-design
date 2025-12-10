@@ -93,7 +93,7 @@ class BackboneTuner:
 
                 results.append({
                     **param_dict,
-                    'val_loss': val_loss,
+                    'val_loss': round(val_loss, 4),
                     'trial': i
                 })
             except Exception as e:
@@ -291,7 +291,7 @@ class PropertyHeadTuner:
 
                 results.append({
                     **{k: str(v) for k, v in param_dict.items()},
-                    'val_loss': val_loss,
+                    'val_loss': round(val_loss, 4),
                     'trial': i
                 })
             except Exception as e:

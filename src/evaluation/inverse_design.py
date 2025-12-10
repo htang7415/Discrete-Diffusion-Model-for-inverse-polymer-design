@@ -90,18 +90,18 @@ class InverseDesigner:
         hits_smiles = [s for s, h in zip(valid_smiles, hits_mask) if h]
         hits_predictions = predictions[hits_mask]
 
-        # Compute metrics
+        # Compute metrics (round floats to 4 decimal places)
         results = {
-            "target_value": target_value,
-            "epsilon": epsilon,
+            "target_value": round(target_value, 4),
+            "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
             "n_valid": len(valid_smiles),
             "n_hits": len(hits_smiles),
-            "success_rate": len(hits_smiles) / len(valid_smiles) if valid_smiles else 0.0,
-            "pred_mean_valid": np.mean(predictions),
-            "pred_std_valid": np.std(predictions),
-            "pred_mean_hits": np.mean(hits_predictions) if len(hits_predictions) > 0 else 0.0,
-            "pred_std_hits": np.std(hits_predictions) if len(hits_predictions) > 0 else 0.0,
+            "success_rate": round(len(hits_smiles) / len(valid_smiles), 4) if valid_smiles else 0.0,
+            "pred_mean_valid": round(float(np.mean(predictions)), 4),
+            "pred_std_valid": round(float(np.std(predictions)), 4),
+            "pred_mean_hits": round(float(np.mean(hits_predictions)), 4) if len(hits_predictions) > 0 else 0.0,
+            "pred_std_hits": round(float(np.std(hits_predictions)), 4) if len(hits_predictions) > 0 else 0.0,
         }
 
         # Generative metrics for all generated samples (validity = n_valid / n_total)
@@ -113,27 +113,27 @@ class InverseDesigner:
             "avg_diversity": gen_metrics["avg_diversity"],
         })
 
-        # SA statistics
+        # SA statistics (round to 4 decimal places)
         sa_valid = self._compute_sa_scores(valid_smiles)
         results.update({
-            "sa_mean_valid": np.mean(sa_valid) if sa_valid else 0.0,
-            "sa_std_valid": np.std(sa_valid) if sa_valid else 0.0,
+            "sa_mean_valid": round(float(np.mean(sa_valid)), 4) if sa_valid else 0.0,
+            "sa_std_valid": round(float(np.std(sa_valid)), 4) if sa_valid else 0.0,
         })
 
         if hits_smiles:
             sa_hits = self._compute_sa_scores(hits_smiles)
             results.update({
-                "sa_mean_hits": np.mean(sa_hits) if sa_hits else 0.0,
-                "sa_std_hits": np.std(sa_hits) if sa_hits else 0.0,
+                "sa_mean_hits": round(float(np.mean(sa_hits)), 4) if sa_hits else 0.0,
+                "sa_std_hits": round(float(np.std(sa_hits)), 4) if sa_hits else 0.0,
             })
         else:
             results.update({"sa_mean_hits": 0.0, "sa_std_hits": 0.0})
 
-        # Store samples
+        # Store samples (round predictions to 4 decimal places)
         results["valid_smiles"] = valid_smiles
-        results["predictions"] = predictions.tolist()
+        results["predictions"] = [round(p, 4) for p in predictions.tolist()]
         results["hits_smiles"] = hits_smiles
-        results["hits_predictions"] = hits_predictions.tolist() if len(hits_predictions) > 0 else []
+        results["hits_predictions"] = [round(p, 4) for p in hits_predictions.tolist()] if len(hits_predictions) > 0 else []
 
         return results
 

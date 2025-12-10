@@ -126,16 +126,16 @@ class GenerativeEvaluator:
         lengths = [len(s) for s in valid_smiles]
         length_stats = self._compute_stats(lengths, "length")
 
-        # Compile metrics
+        # Compile metrics (round floats to 4 decimal places)
         metrics = {
             "sample_id": sample_id,
             "n_total": n_total,
             "n_valid": n_valid,
-            "validity": validity,
-            "uniqueness": uniqueness,
-            "novelty": novelty,
-            "avg_diversity": avg_diversity,
-            "frac_star_eq_2": frac_star_eq_2,
+            "validity": round(validity, 4),
+            "uniqueness": round(uniqueness, 4),
+            "novelty": round(novelty, 4),
+            "avg_diversity": round(avg_diversity, 4),
+            "frac_star_eq_2": round(frac_star_eq_2, 4),
             **sa_stats,
             **length_stats,
             "star_count_distribution": dict(star_counter)
@@ -151,7 +151,7 @@ class GenerativeEvaluator:
             prefix: Prefix for stat names.
 
         Returns:
-            Dictionary of statistics.
+            Dictionary of statistics (rounded to 4 decimal places).
         """
         if not values:
             return {
@@ -162,10 +162,10 @@ class GenerativeEvaluator:
             }
 
         return {
-            f"mean_{prefix}": np.mean(values),
-            f"std_{prefix}": np.std(values),
-            f"min_{prefix}": np.min(values),
-            f"max_{prefix}": np.max(values)
+            f"mean_{prefix}": round(float(np.mean(values)), 4),
+            f"std_{prefix}": round(float(np.std(values)), 4),
+            f"min_{prefix}": round(float(np.min(values)), 4),
+            f"max_{prefix}": round(float(np.max(values)), 4)
         }
 
     def get_valid_samples(

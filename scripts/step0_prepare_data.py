@@ -9,6 +9,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import random
 import pandas as pd
 import numpy as np
 
@@ -25,8 +26,10 @@ def main(args):
 
     # Create output directories
     results_dir = Path(config['paths']['results_dir'])
-    metrics_dir = results_dir / 'metrics'
-    figures_dir = results_dir / 'figures'
+    step_dir = results_dir / 'step0_data_prep'
+    metrics_dir = step_dir / 'metrics'
+    figures_dir = step_dir / 'figures'
+    results_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,6 +82,27 @@ def main(args):
         'pct': [100*train_valid/train_total, 100*val_valid/val_total]
     })
     roundtrip_df.to_csv(metrics_dir / 'tokenizer_roundtrip.csv', index=False)
+
+    # Save 10 example roundtrips for demonstration
+    print("   Saving tokenization examples...")
+    random.seed(config['data']['random_seed'])
+    sample_smiles = random.sample(train_df['p_smiles'].tolist(), min(10, len(train_df)))
+
+    examples = []
+    for smiles in sample_smiles:
+        tokens = tokenizer.tokenize(smiles)
+        # Create token -> vocab ID hashmap
+        token_ids = {tok: tokenizer.vocab.get(tok, tokenizer.unk_token_id) for tok in tokens}
+        reconstructed = tokenizer.detokenize(tokens)
+        examples.append({
+            'original_smiles': smiles,
+            'num_tokens': len(tokens),
+            'tokens_hashmap': str(token_ids),
+            'reconstructed_smiles': reconstructed
+        })
+
+    examples_df = pd.DataFrame(examples)
+    examples_df.to_csv(metrics_dir / 'tokenizer_examples.csv', index=False)
 
     # Compute statistics
     print("\n4. Computing statistics...")
@@ -136,7 +160,8 @@ def main(args):
         ylabel='Count',
         title='Token Length Distribution',
         save_path=figures_dir / 'length_hist_train_val.png',
-        bins=50
+        bins=50,
+        style='step'
     )
 
     # SA score histogram
@@ -147,7 +172,8 @@ def main(args):
         ylabel='Count',
         title='SA Score Distribution',
         save_path=figures_dir / 'sa_hist_train_val.png',
-        bins=50
+        bins=50,
+        style='step'
     )
 
     # Save processed data

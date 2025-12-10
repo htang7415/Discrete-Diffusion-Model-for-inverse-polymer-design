@@ -34,8 +34,9 @@ def main(args):
 
     # Create output directories
     results_dir = Path(config['paths']['results_dir'])
-    metrics_dir = results_dir / 'metrics'
-    figures_dir = results_dir / 'figures'
+    step_dir = results_dir / 'step2_sampling'
+    metrics_dir = step_dir / 'metrics'
+    figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -154,7 +155,8 @@ def main(args):
         ylabel='Count',
         title='SA Score: Train vs Generated',
         save_path=figures_dir / 'sa_hist_train_vs_uncond.png',
-        bins=50
+        bins=50,
+        style='step'
     )
 
     # Length histogram: train vs generated
@@ -168,7 +170,8 @@ def main(args):
         ylabel='Count',
         title='Length: Train vs Generated',
         save_path=figures_dir / 'length_hist_train_vs_uncond.png',
-        bins=50
+        bins=50,
+        style='step'
     )
 
     # Star count histogram

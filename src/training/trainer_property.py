@@ -26,7 +26,8 @@ class PropertyTrainer:
         config: Dict,
         device: str = 'cuda',
         output_dir: str = 'results',
-        normalization_params: Optional[Dict] = None
+        normalization_params: Optional[Dict] = None,
+        step_dir: str = None
     ):
         """Initialize trainer.
 
@@ -38,8 +39,9 @@ class PropertyTrainer:
             property_name: Name of the property.
             config: Training configuration.
             device: Device for training.
-            output_dir: Output directory.
+            output_dir: Output directory for shared artifacts (checkpoints).
             normalization_params: Normalization parameters (mean, std).
+            step_dir: Step-specific output directory for metrics/figures.
         """
         self.model = model.to(device)
         self.train_dataloader = train_dataloader
@@ -49,11 +51,14 @@ class PropertyTrainer:
         self.config = config
         self.device = device
         self.output_dir = Path(output_dir)
+        self.step_dir = Path(step_dir) if step_dir else self.output_dir
         self.normalization_params = normalization_params or {'mean': 0.0, 'std': 1.0}
 
         # Create output directories
         self.checkpoint_dir = self.output_dir / 'checkpoints'
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_dir = self.step_dir / 'metrics'
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
         # Training config
         train_config = config['training_property']
@@ -233,17 +238,17 @@ class PropertyTrainer:
         all_preds = np.array(all_preds) * std + mean
         all_labels = np.array(all_labels) * std + mean
 
-        # Compute metrics
-        mae = mean_absolute_error(all_labels, all_preds)
-        rmse = np.sqrt(mean_squared_error(all_labels, all_preds))
-        r2 = r2_score(all_labels, all_preds)
+        # Compute metrics (round to 4 decimal places)
+        mae = round(mean_absolute_error(all_labels, all_preds), 4)
+        rmse = round(np.sqrt(mean_squared_error(all_labels, all_preds)), 4)
+        r2 = round(r2_score(all_labels, all_preds), 4)
 
         return {
             'MAE': mae,
             'RMSE': rmse,
             'R2': r2,
-            'predictions': all_preds.tolist(),
-            'labels': all_labels.tolist()
+            'predictions': [round(p, 4) for p in all_preds.tolist()],
+            'labels': [round(l, 4) for l in all_labels.tolist()]
         }
 
     def _save_checkpoint(self, val_loss: float, epoch: int) -> bool:
@@ -291,16 +296,13 @@ class PropertyTrainer:
         Args:
             test_metrics: Test set metrics.
         """
-        metrics_dir = self.output_dir / 'metrics'
-        metrics_dir.mkdir(parents=True, exist_ok=True)
-
         # Save loss curves
         loss_df = pd.DataFrame({
             'epoch': list(range(1, len(self.train_losses) + 1)),
             'train_loss': self.train_losses,
             'val_loss': self.val_losses
         })
-        loss_df.to_csv(metrics_dir / f'{self.property_name}_loss_curve.csv', index=False)
+        loss_df.to_csv(self.metrics_dir / f'{self.property_name}_loss_curve.csv', index=False)
 
         # Save test metrics
         metrics_df = pd.DataFrame([{
@@ -310,14 +312,14 @@ class PropertyTrainer:
             'R2': test_metrics['R2'],
             'best_val_loss': self.best_val_loss
         }])
-        metrics_df.to_csv(metrics_dir / f'{self.property_name}_test_metrics.csv', index=False)
+        metrics_df.to_csv(self.metrics_dir / f'{self.property_name}_test_metrics.csv', index=False)
 
         # Save predictions for parity plot
         pred_df = pd.DataFrame({
             'true': test_metrics['labels'],
             'predicted': test_metrics['predictions']
         })
-        pred_df.to_csv(metrics_dir / f'{self.property_name}_predictions.csv', index=False)
+        pred_df.to_csv(self.metrics_dir / f'{self.property_name}_predictions.csv', index=False)
 
         print(f"\nTest Results for {self.property_name}:")
         print(f"  MAE: {test_metrics['MAE']:.4f}")

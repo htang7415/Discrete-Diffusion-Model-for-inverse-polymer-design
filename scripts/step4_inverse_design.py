@@ -35,8 +35,9 @@ def main(args):
 
     # Create output directories
     results_dir = Path(config['paths']['results_dir'])
-    metrics_dir = results_dir / 'metrics'
-    figures_dir = results_dir / 'figures'
+    step_dir = results_dir / f'step4_{args.property}'
+    metrics_dir = step_dir / 'metrics'
+    figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -132,10 +133,14 @@ def main(args):
     if args.targets:
         target_values = [float(t) for t in args.targets.split(',')]
     else:
-        # Default targets based on property data statistics
-        property_df = pd.read_csv(results_dir / 'metrics' / f'{args.property}_data_stats.csv')
-        mean_val = property_df.loc[property_df['split'] == 'train', 'mean'].values[0]
-        std_val = property_df.loc[property_df['split'] == 'train', 'std'].values[0]
+        # Default targets based on property data statistics (from step3)
+        step3_metrics = results_dir / f'step3_{args.property}' / 'metrics'
+        property_df = pd.read_csv(step3_metrics / f'{args.property}_data_stats.csv')
+        # Stats columns are named {property}_mean, {property}_std from get_statistics()
+        mean_col = f'{args.property}_mean'
+        std_col = f'{args.property}_std'
+        mean_val = property_df.loc[property_df['split'] == 'train', mean_col].values[0]
+        std_val = property_df.loc[property_df['split'] == 'train', std_col].values[0]
         target_values = [
             mean_val - std_val,
             mean_val,
@@ -222,7 +227,8 @@ def main(args):
                 ylabel='Count',
                 title=f'SA Score: Train vs Hits (target={int(middle_target)})',
                 save_path=figures_dir / f'{args.property}_sa_hist_train_vs_hits.png',
-                bins=50
+                bins=50,
+                style='step'
             )
 
     print("\n" + "=" * 50)
