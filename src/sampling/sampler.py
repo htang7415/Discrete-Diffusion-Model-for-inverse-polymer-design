@@ -700,10 +700,42 @@ class ConstrainedSampler:
                 unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
                 unmask_positions = masked_pos[unmask_indices]
 
-                # Sample tokens for these positions
+                # Sample tokens for these positions SEQUENTIALLY with constraint updates
+                # This prevents race conditions where multiple positions sample conflicting tokens
                 for pos in unmask_positions:
                     sampled = torch.multinomial(probs[i, pos], 1)
                     ids[i, pos] = sampled
+
+                    # Update constraints dynamically based on what was just sampled
+                    sampled_token = sampled.item()
+
+                    # If we sampled a star, update star constraint for remaining positions
+                    if sampled_token == self.star_id:
+                        # Count current stars (excluding remaining MASK positions)
+                        non_mask = ids[i] != self.mask_id
+                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
+
+                        # If we've reached the limit, forbid stars at remaining masked positions
+                        if current_stars >= 2:
+                            remaining_mask = ids[i] == self.mask_id
+                            logits[i, remaining_mask, self.star_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    # If we sampled a bond, forbid bonds at the next position
+                    elif sampled_token in self.bond_ids:
+                        # Find next position in the sequence (not necessarily next in unmask order)
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            for bond_id in self.bond_ids:
+                                logits[i, next_pos, bond_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    # If we sampled an open paren, forbid close paren at the next position
+                    elif sampled_token == self.open_paren_id:
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            logits[i, next_pos, self.close_paren_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
 
             # Store logits for final step
             if t == 1:
@@ -890,9 +922,42 @@ class ConstrainedSampler:
                 unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
                 unmask_positions = masked_pos[unmask_indices]
 
+                # Sample tokens for these positions SEQUENTIALLY with constraint updates
+                # This prevents race conditions where multiple positions sample conflicting tokens
                 for pos in unmask_positions:
                     sampled = torch.multinomial(probs[i, pos], 1)
                     ids[i, pos] = sampled
+
+                    # Update constraints dynamically based on what was just sampled
+                    sampled_token = sampled.item()
+
+                    # If we sampled a star, update star constraint for remaining positions
+                    if sampled_token == self.star_id:
+                        # Count current stars (excluding remaining MASK positions)
+                        non_mask = ids[i] != self.mask_id
+                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
+
+                        # If we've reached the limit, forbid stars at remaining masked positions
+                        if current_stars >= 2:
+                            remaining_mask = ids[i] == self.mask_id
+                            logits[i, remaining_mask, self.star_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    # If we sampled a bond, forbid bonds at the next position
+                    elif sampled_token in self.bond_ids:
+                        # Find next position in the sequence (not necessarily next in unmask order)
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            for bond_id in self.bond_ids:
+                                logits[i, next_pos, bond_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    # If we sampled an open paren, forbid close paren at the next position
+                    elif sampled_token == self.open_paren_id:
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            logits[i, next_pos, self.close_paren_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
 
             if t == 1:
                 final_logits = logits
