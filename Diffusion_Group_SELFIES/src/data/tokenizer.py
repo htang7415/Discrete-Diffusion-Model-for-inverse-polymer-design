@@ -11,6 +11,10 @@ from rdkit import RDLogger
 from group_selfies import GroupGrammar, fragment_mols, Group
 from group_selfies.utils import fragment_utils as fu
 
+import multiprocessing as mp
+from multiprocessing import Pool
+from functools import partial
+
 # Silence RDKit warnings
 RDLogger.DisableLog('rdApp.*')
 
@@ -33,6 +37,115 @@ def _select_diverse_set_simple(l, k, weights=None):
 
 # Patch the fragment_utils to use simple selection
 fu.select_diverse_set = _select_diverse_set_simple
+
+
+def _fragment_batch_worker(smiles_batch, placeholder_smiles):
+    """Worker function to fragment a batch of SMILES in parallel.
+
+    This function runs in a separate process and cannot access class methods directly.
+
+    Args:
+        smiles_batch: List of p-SMILES strings to process
+        placeholder_smiles: Placeholder string to replace '*'
+
+    Returns:
+        List of fragmented groups (canonical SMILES strings)
+    """
+    from rdkit import Chem, RDLogger
+    from group_selfies import fragment_mols
+
+    # Silence RDKit warnings in worker
+    RDLogger.DisableLog('rdApp.*')
+
+    # Convert SMILES to Mol objects
+    mols = []
+    for smiles in smiles_batch:
+        smiles_ph = smiles.replace("*", placeholder_smiles)
+        try:
+            mol = Chem.MolFromSmiles(smiles_ph)
+            if mol is not None:
+                mols.append(mol)
+        except Exception:
+            continue
+
+    # Fragment this batch
+    if not mols:
+        return []
+
+    try:
+        groups = fragment_mols(mols)
+        return groups if groups else []
+    except Exception as e:
+        # Log error but don't crash worker
+        print(f"Warning: fragment_mols failed for batch: {e}")
+        return []
+
+
+def _tokenize_batch_worker(smiles_batch, grammar, placeholder_smiles):
+    """Worker function to tokenize a batch of SMILES in parallel.
+
+    This function runs in a separate process and tokenizes molecules to collect vocabulary.
+
+    Args:
+        smiles_batch: List of p-SMILES strings to tokenize
+        grammar: GroupGrammar object for encoding
+        placeholder_smiles: Placeholder string to replace '*'
+
+    Returns:
+        Set of unique tokens from this batch
+    """
+    import re
+    from rdkit import Chem, RDLogger
+
+    # Silence RDKit warnings in worker
+    RDLogger.DisableLog('rdApp.*')
+
+    batch_tokens = set()
+
+    for smiles in smiles_batch:
+        # Replace * with placeholder
+        smiles_ph = smiles.replace("*", placeholder_smiles)
+
+        # Convert to RDKit Mol
+        try:
+            mol = Chem.MolFromSmiles(smiles_ph)
+            if mol is None:
+                continue
+        except Exception:
+            continue
+
+        # Encode to Group SELFIES
+        try:
+            gsf_string = grammar.full_encoder(mol)
+
+            # Parse Group SELFIES string into tokens
+            # Group SELFIES tokens are bracket-enclosed: [token1][token2]...
+            i = 0
+            while i < len(gsf_string):
+                # Check for bracket token
+                if gsf_string[i] == '[':
+                    match = re.match(r'\[[^\[\]]+\]', gsf_string[i:])
+                    if match:
+                        batch_tokens.add(match.group())
+                        i += len(match.group())
+                        continue
+
+                # Check for group reference (e.g., :0G10)
+                if gsf_string[i] == ':':
+                    match = re.match(r':[0-9]+[A-Za-z0-9]+', gsf_string[i:])
+                    if match:
+                        batch_tokens.add(match.group())
+                        i += len(match.group())
+                        continue
+
+                # Single character
+                batch_tokens.add(gsf_string[i])
+                i += 1
+
+        except Exception:
+            continue
+
+    return batch_tokens
 
 
 class GroupSELFIESTokenizer:
@@ -216,6 +329,8 @@ class GroupSELFIESTokenizer:
         self,
         smiles_list: List[str],
         max_groups: int = 10000,
+        num_workers: int = 1,
+        chunk_size: int = 1000,
         verbose: bool = True
     ) -> Tuple[Dict[str, int], GroupGrammar]:
         """Build vocabulary and grammar from a list of SMILES strings.
@@ -223,30 +338,46 @@ class GroupSELFIESTokenizer:
         Args:
             smiles_list: List of p-SMILES strings.
             max_groups: Maximum number of groups in grammar.
+            num_workers: Number of parallel workers for fragmentation (1 = sequential).
+            chunk_size: Number of molecules per chunk for parallel processing.
             verbose: Whether to show progress bars.
 
         Returns:
             Tuple of (vocabulary dict, GroupGrammar).
         """
-        # Convert to placeholder SMILES and create RDKit mols
-        mols_for_grammar = []
+        # Filter to valid molecules first
         valid_smiles = []
-
-        iterator = tqdm(smiles_list, desc="Building grammar") if verbose else smiles_list
+        iterator = tqdm(smiles_list, desc="Validating molecules") if verbose else smiles_list
         for smiles in iterator:
             smiles_ph = self._star_to_placeholder(smiles)
             mol = self._smiles_to_mol(smiles_ph)
             if mol is not None:
-                mols_for_grammar.append(mol)
                 valid_smiles.append(smiles)
 
-        if not mols_for_grammar:
+        if not valid_smiles:
             raise ValueError("No valid molecules found for grammar building.")
 
-        print(f"Building grammar from {len(mols_for_grammar)} valid molecules...")
+        print(f"Building grammar from {len(valid_smiles)} valid molecules...")
 
-        # Fragment molecules to get groups
-        raw_groups = fragment_mols(mols_for_grammar)
+        # Fragment molecules (PARALLELIZED)
+        if num_workers > 1:
+            raw_groups = self._parallel_fragment_mols(
+                valid_smiles,
+                num_workers=num_workers,
+                chunk_size=chunk_size,
+                verbose=verbose
+            )
+        else:
+            # Original sequential path
+            mols_for_grammar = []
+            for smiles in valid_smiles:
+                smiles_ph = self._star_to_placeholder(smiles)
+                mol = self._smiles_to_mol(smiles_ph)
+                if mol is not None:
+                    mols_for_grammar.append(mol)
+
+            raw_groups = fragment_mols(mols_for_grammar)
+
         if not raw_groups:
             raise RuntimeError("fragment_mols returned no groups; cannot build GroupGrammar.")
 
@@ -264,12 +395,22 @@ class GroupSELFIESTokenizer:
         vocab = {token: idx for idx, token in enumerate(self.SPECIAL_TOKENS)}
         current_id = len(self.SPECIAL_TOKENS)
 
-        # Collect all unique tokens
-        all_tokens = set()
-        iterator = tqdm(valid_smiles, desc="Building vocabulary") if verbose else valid_smiles
-        for smiles in iterator:
-            tokens = self.tokenize(smiles)
-            all_tokens.update(tokens)
+        # Collect all unique tokens (PARALLELIZED)
+        if num_workers > 1:
+            all_tokens = self._parallel_build_vocabulary(
+                valid_smiles,
+                self.grammar,
+                num_workers=num_workers,
+                chunk_size=chunk_size,
+                verbose=verbose
+            )
+        else:
+            # Sequential fallback
+            all_tokens = set()
+            iterator = tqdm(valid_smiles, desc="Building vocabulary") if verbose else valid_smiles
+            for smiles in iterator:
+                tokens = self.tokenize(smiles)
+                all_tokens.update(tokens)
 
         # Remove special tokens that might have been added
         all_tokens -= set(self.SPECIAL_TOKENS)
@@ -292,6 +433,140 @@ class GroupSELFIESTokenizer:
         self._find_placeholder_token()
 
         return vocab, self.grammar
+
+    def _parallel_fragment_mols(
+        self,
+        smiles_list: List[str],
+        num_workers: int,
+        chunk_size: int = 1000,
+        verbose: bool = True
+    ) -> List[str]:
+        """Fragment molecules in parallel using multiprocessing.
+
+        Args:
+            smiles_list: List of p-SMILES strings
+            num_workers: Number of parallel workers
+            chunk_size: Number of SMILES per chunk
+            verbose: Show progress bars
+
+        Returns:
+            List of unique fragment SMILES
+        """
+        # Split into chunks
+        chunks = [
+            smiles_list[i:i + chunk_size]
+            for i in range(0, len(smiles_list), chunk_size)
+        ]
+
+        if verbose:
+            print(f"Fragmenting {len(smiles_list)} molecules using {num_workers} workers...")
+            print(f"Split into {len(chunks)} chunks of ~{chunk_size} molecules each")
+
+        # Create worker function with placeholder bound
+        worker_func = partial(_fragment_batch_worker, placeholder_smiles=self.PLACEHOLDER_SMILES)
+
+        # Process chunks in parallel
+        all_groups = []
+
+        if num_workers <= 1:
+            # Sequential fallback for debugging
+            iterator = tqdm(chunks, desc="Fragmenting chunks") if verbose else chunks
+            for chunk in iterator:
+                groups = worker_func(chunk)
+                all_groups.extend(groups)
+        else:
+            # Parallel processing
+            with Pool(processes=num_workers) as pool:
+                if verbose:
+                    # Use imap_unordered for progress tracking
+                    results = list(tqdm(
+                        pool.imap_unordered(worker_func, chunks),
+                        total=len(chunks),
+                        desc="Fragmenting chunks"
+                    ))
+                else:
+                    results = pool.map(worker_func, chunks)
+
+                # Flatten results
+                for groups in results:
+                    all_groups.extend(groups)
+
+        # Remove duplicates while preserving order (deterministic)
+        unique_groups = []
+        seen = set()
+        for group in all_groups:
+            if group not in seen:
+                seen.add(group)
+                unique_groups.append(group)
+
+        if verbose:
+            print(f"Found {len(all_groups)} total fragments ({len(unique_groups)} unique)")
+
+        return unique_groups
+
+    def _parallel_build_vocabulary(
+        self,
+        smiles_list: List[str],
+        grammar,
+        num_workers: int,
+        chunk_size: int = 1000,
+        verbose: bool = True
+    ) -> set:
+        """Build vocabulary in parallel by tokenizing molecules.
+
+        Args:
+            smiles_list: List of p-SMILES strings
+            grammar: GroupGrammar object for encoding
+            num_workers: Number of parallel workers
+            chunk_size: Number of SMILES per chunk
+            verbose: Show progress bars
+
+        Returns:
+            Set of unique tokens
+        """
+        # Split into chunks
+        chunks = [
+            smiles_list[i:i + chunk_size]
+            for i in range(0, len(smiles_list), chunk_size)
+        ]
+
+        if verbose:
+            print(f"Building vocabulary from {len(smiles_list)} molecules using {num_workers} workers...")
+            print(f"Split into {len(chunks)} chunks of ~{chunk_size} molecules each")
+
+        # Create worker function with grammar and placeholder bound
+        worker_func = partial(_tokenize_batch_worker, grammar=grammar, placeholder_smiles=self.PLACEHOLDER_SMILES)
+
+        # Process chunks in parallel
+        all_tokens = set()
+
+        if num_workers <= 1:
+            # Sequential fallback for debugging
+            iterator = tqdm(chunks, desc="Building vocabulary") if verbose else chunks
+            for chunk in iterator:
+                batch_tokens = worker_func(chunk)
+                all_tokens.update(batch_tokens)
+        else:
+            # Parallel processing
+            with Pool(processes=num_workers) as pool:
+                if verbose:
+                    # Use imap_unordered for progress tracking
+                    results = list(tqdm(
+                        pool.imap_unordered(worker_func, chunks),
+                        total=len(chunks),
+                        desc="Building vocabulary"
+                    ))
+                else:
+                    results = pool.map(worker_func, chunks)
+
+                # Merge all token sets
+                for batch_tokens in results:
+                    all_tokens.update(batch_tokens)
+
+        if verbose:
+            print(f"Found {len(all_tokens)} unique tokens")
+
+        return all_tokens
 
     def _find_placeholder_token(self):
         """Find the token(s) representing the placeholder atom."""

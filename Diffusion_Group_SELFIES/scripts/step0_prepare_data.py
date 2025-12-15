@@ -53,9 +53,28 @@ def main(args):
     # Get max_groups from config if available
     max_groups = config.get('group_selfies', {}).get('max_groups', 10000)
 
+    # Get parallelization settings
+    parallel_config = config.get('group_selfies', {}).get('parallel', {})
+    num_workers = parallel_config.get('num_workers', 1)
+    chunk_size = parallel_config.get('chunk_size', 1000)
+    parallel_enabled = parallel_config.get('enabled', False)
+
+    # Auto-detect CPU count if num_workers is 0
+    if num_workers == 0:
+        import multiprocessing
+        num_workers = multiprocessing.cpu_count()
+        print(f"Auto-detected {num_workers} CPU cores")
+
+    # Disable parallelization if not enabled
+    if not parallel_enabled:
+        num_workers = 1
+        print("Parallelization disabled in config")
+
     vocab, grammar = tokenizer.build_vocab_and_grammar(
         train_df['p_smiles'].tolist(),
         max_groups=max_groups,
+        num_workers=num_workers,
+        chunk_size=chunk_size,
         verbose=True
     )
     print(f"Vocabulary size: {tokenizer.vocab_size}")

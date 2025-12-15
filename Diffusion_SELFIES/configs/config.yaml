@@ -42,7 +42,7 @@ backbone:
   num_heads: 8
   ffn_hidden_size: 1536
   dropout: 0.1
-  max_position_embeddings: 128
+  max_position_embeddings: 256
 
 # Small proxy model for hyperparameter tuning
 proxy_backbone:

@@ -103,14 +103,28 @@ def main(args):
     }
     print(f"   Edge vocabulary size: {len(edge_vocab)}")
 
+    # Default stereochemistry vocabulary
+    stereo_vocab = {
+        'STEREONONE': 0,
+        'STEREOANY': 1,
+        'STEREOZ': 2,
+        'STEREOE': 3,
+        'STEREOCIS': 4,
+        'STEREOTRANS': 5,
+        'MASK': 6
+    }
+    print(f"   Stereo vocabulary size: {len(stereo_vocab)}")
+
     # Save graph configuration
     print("\n3. Saving graph configuration...")
     graph_config = {
         'Nmax': Nmax,
         'atom_vocab': atom_vocab,
         'edge_vocab': edge_vocab,
+        'stereo_vocab': stereo_vocab,
         'atom_vocab_size': len(atom_vocab),
-        'edge_vocab_size': len(edge_vocab)
+        'edge_vocab_size': len(edge_vocab),
+        'stereo_vocab_size': len(stereo_vocab)
     }
 
     graph_config_path = results_dir / 'graph_config.json'
@@ -152,6 +166,7 @@ def main(args):
     graph_tokenizer = GraphTokenizer(
         atom_vocab=atom_vocab,
         edge_vocab=edge_vocab,
+        stereo_vocab=stereo_vocab,
         Nmax=Nmax
     )
 
