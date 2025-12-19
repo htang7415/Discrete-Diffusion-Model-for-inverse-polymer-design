@@ -231,6 +231,66 @@ def batch_selfies_to_psmiles(selfies_list: List[str]) -> List[Optional[str]]:
     return [selfies_to_psmiles(selfies) for selfies in selfies_list]
 
 
+def parallel_selfies_to_psmiles(
+    selfies_list: List[str],
+    num_workers: int = 8,
+    chunksize: int = 100
+) -> List[Optional[str]]:
+    """Convert batch of SELFIES to p-SMILES in parallel.
+
+    Args:
+        selfies_list: List of SELFIES strings.
+        num_workers: Number of parallel workers.
+        chunksize: Chunk size for multiprocessing.
+
+    Returns:
+        List of p-SMILES strings (None for failed conversions).
+    """
+    from multiprocessing import Pool
+
+    if len(selfies_list) == 0:
+        return []
+
+    # For small lists, use sequential processing (multiprocessing overhead)
+    if len(selfies_list) < 100 or num_workers <= 1:
+        return batch_selfies_to_psmiles(selfies_list)
+
+    with Pool(processes=num_workers) as pool:
+        results = list(pool.imap(selfies_to_psmiles, selfies_list, chunksize=chunksize))
+
+    return results
+
+
+def parallel_psmiles_to_selfies(
+    psmiles_list: List[str],
+    num_workers: int = 8,
+    chunksize: int = 100
+) -> List[Optional[str]]:
+    """Convert batch of p-SMILES to SELFIES in parallel.
+
+    Args:
+        psmiles_list: List of p-SMILES strings.
+        num_workers: Number of parallel workers.
+        chunksize: Chunk size for multiprocessing.
+
+    Returns:
+        List of SELFIES strings (None for failed conversions).
+    """
+    from multiprocessing import Pool
+
+    if len(psmiles_list) == 0:
+        return []
+
+    # For small lists, use sequential processing (multiprocessing overhead)
+    if len(psmiles_list) < 100 or num_workers <= 1:
+        return batch_psmiles_to_selfies(psmiles_list)
+
+    with Pool(processes=num_workers) as pool:
+        results = list(pool.imap(psmiles_to_selfies, psmiles_list, chunksize=chunksize))
+
+    return results
+
+
 def validate_selfies_placeholder_count(selfies: str, expected_count: int = 2) -> bool:
     """Validate that SELFIES has expected number of placeholders.
 

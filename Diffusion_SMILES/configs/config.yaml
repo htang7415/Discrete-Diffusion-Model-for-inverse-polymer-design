@@ -80,7 +80,7 @@ training_property:
 optimization:
   use_amp: true                    # Mixed precision (BF16)
   compile_model: true              # torch.compile()
-  gradient_accumulation_steps: 1   # Increase for larger effective batch
+  gradient_accumulation_steps: 4   # Effective batch = 256 * 4 = 1024
   num_workers: 8                   # DataLoader workers
   pin_memory: true                 # GPU memory pinning
   cudnn_benchmark: true            # cuDNN autotuning

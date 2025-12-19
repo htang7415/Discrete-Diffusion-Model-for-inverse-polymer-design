@@ -36,7 +36,7 @@ backbone:
 
 # Small proxy model for hyperparameter tuning
 proxy_backbone:
-  hidden_size: 256
+  hidden_size: 512
   num_layers: 4
   num_heads: 4
   ffn_hidden_size: 1024

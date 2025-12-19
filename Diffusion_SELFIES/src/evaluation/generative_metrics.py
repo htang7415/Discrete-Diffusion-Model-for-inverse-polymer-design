@@ -14,6 +14,7 @@ from ..utils.chemistry import (
     check_validity,
     count_stars,
     compute_sa_score,
+    parallel_compute_sa_scores,
     canonicalize_smiles,
     compute_fingerprint,
     compute_pairwise_diversity,
@@ -140,14 +141,11 @@ class GenerativeEvaluator:
         star_counter = Counter(star_counts)
         frac_star_eq_2 = star_counter.get(2, 0) / n_valid if n_valid > 0 else 0.0
 
-        # SA scores
-        sa_scores = []
+        # SA scores (parallel computation for speedup)
         if show_progress:
-            print("Computing SA scores...")
-        for smiles in tqdm(valid_smiles, desc="SA scores", disable=not show_progress):
-            sa = compute_sa_score(smiles)
-            if sa is not None:
-                sa_scores.append(sa)
+            print("Computing SA scores (parallel)...")
+        sa_results = parallel_compute_sa_scores(valid_smiles, num_workers=8, chunksize=100)
+        sa_scores = [sa for sa in sa_results if sa is not None]
 
         sa_stats = self._compute_stats(sa_scores, "sa")
 
@@ -269,20 +267,18 @@ class GenerativeEvaluator:
 
         return valid_psmiles, valid_selfies
 
-    def compute_sa_stats(self, smiles_list: List[str]) -> Dict[str, float]:
+    def compute_sa_stats(self, smiles_list: List[str], num_workers: int = 8) -> Dict[str, float]:
         """Compute SA score statistics.
 
         Args:
             smiles_list: List of SMILES.
+            num_workers: Number of parallel workers.
 
         Returns:
             SA statistics.
         """
-        sa_scores = []
-        for smiles in smiles_list:
-            sa = compute_sa_score(smiles)
-            if sa is not None:
-                sa_scores.append(sa)
+        sa_results = parallel_compute_sa_scores(smiles_list, num_workers=num_workers)
+        sa_scores = [sa for sa in sa_results if sa is not None]
         return self._compute_stats(sa_scores, "sa")
 
     def compute_length_stats(self, smiles_list: List[str]) -> Dict[str, float]:
@@ -310,18 +306,18 @@ class GenerativeEvaluator:
         scalar_metrics = {k: v for k, v in metrics.items() if not isinstance(v, dict)}
         return pd.DataFrame([scalar_metrics])
 
-    def get_training_sa_scores(self) -> List[float]:
-        """Compute SA scores for training set.
+    def get_training_sa_scores(self, num_workers: int = 8) -> List[float]:
+        """Compute SA scores for training set (parallel).
+
+        Args:
+            num_workers: Number of parallel workers.
 
         Returns:
             List of SA scores.
         """
-        sa_scores = []
-        for smiles in tqdm(list(self.training_smiles), desc="Training SA scores"):
-            sa = compute_sa_score(smiles)
-            if sa is not None:
-                sa_scores.append(sa)
-        return sa_scores
+        smiles_list = list(self.training_smiles)
+        sa_results = parallel_compute_sa_scores(smiles_list, num_workers=num_workers)
+        return [sa for sa in sa_results if sa is not None]
 
     def get_training_lengths(self) -> List[int]:
         """Get lengths of training SMILES.

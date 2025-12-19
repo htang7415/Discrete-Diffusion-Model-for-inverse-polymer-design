@@ -72,6 +72,8 @@ class ConstrainedSampler:
     ) -> torch.Tensor:
         """Apply constraint to limit number of '[I+3]' placeholder tokens.
 
+        Vectorized implementation for better GPU utilization.
+
         Args:
             logits: Logits of shape [batch, seq_len, vocab_size].
             current_ids: Current token IDs of shape [batch, seq_len].
@@ -80,17 +82,25 @@ class ConstrainedSampler:
         Returns:
             Modified logits.
         """
-        batch_size, seq_len, vocab_size = logits.shape
-
         # Count current placeholders (excluding MASK positions)
         non_mask = current_ids != self.mask_id
-        current_placeholders = ((current_ids == self.placeholder_id) & non_mask).sum(dim=1)
+        current_placeholders = ((current_ids == self.placeholder_id) & non_mask).sum(dim=1)  # [batch]
 
-        # For sequences with >= max_placeholders, set placeholder logit to -inf at MASK positions
-        for i in range(batch_size):
-            if current_placeholders[i] >= max_placeholders:
-                mask_positions = current_ids[i] == self.mask_id
-                logits[i, mask_positions, self.placeholder_id] = float('-inf')
+        # Find sequences that have reached the placeholder limit [batch]
+        exceed_limit = current_placeholders >= max_placeholders
+
+        # Find mask positions [batch, seq_len]
+        mask_positions = current_ids == self.mask_id
+
+        # Combined mask: sequences that exceed limit AND are mask positions [batch, seq_len]
+        should_forbid = exceed_limit.unsqueeze(1) & mask_positions
+
+        # Set placeholder logit to -inf where should_forbid is True (vectorized)
+        logits[:, :, self.placeholder_id] = torch.where(
+            should_forbid,
+            torch.tensor(float('-inf'), device=logits.device, dtype=logits.dtype),
+            logits[:, :, self.placeholder_id]
+        )
 
         return logits
 

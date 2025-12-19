@@ -133,6 +133,34 @@ class BackboneTrainer:
         self.val_losses = []
         self.learning_rates = []
 
+        # GPU memory monitoring
+        self.memory_log_interval = opt_config.get('memory_log_interval', 500)
+        self.memory_stats = []
+
+    def _log_gpu_memory(self) -> Dict:
+        """Log GPU memory usage.
+
+        Returns:
+            Dictionary with memory statistics in GB.
+        """
+        if self.device != 'cuda' or not torch.cuda.is_available():
+            return {}
+
+        stats = {
+            'step': self.global_step,
+            'allocated_gb': torch.cuda.memory_allocated() / 1e9,
+            'reserved_gb': torch.cuda.memory_reserved() / 1e9,
+            'max_allocated_gb': torch.cuda.max_memory_allocated() / 1e9,
+        }
+
+        # Get total GPU memory
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+        stats['total_gb'] = total_memory
+        stats['free_gb'] = total_memory - stats['reserved_gb']
+        stats['utilization_pct'] = (stats['allocated_gb'] / total_memory) * 100
+
+        return stats
+
     def train(self) -> Dict:
         """Run training loop.
 
@@ -212,6 +240,16 @@ class BackboneTrainer:
             # Periodic save
             if self.global_step > 0 and self.global_step % self.save_every == 0:
                 self._save_periodic_checkpoint(epoch)
+
+            # GPU memory monitoring
+            if self.global_step > 0 and self.global_step % self.memory_log_interval == 0:
+                mem_stats = self._log_gpu_memory()
+                if mem_stats:
+                    self.memory_stats.append(mem_stats)
+                    pbar.set_postfix({
+                        'loss': f'{loss:.4f}',
+                        'mem': f'{mem_stats["allocated_gb"]:.1f}/{mem_stats["total_gb"]:.0f}GB'
+                    })
 
             self.global_step += 1
 
@@ -355,6 +393,12 @@ class BackboneTrainer:
                 'val_loss': history['val_loss']
             })
             val_df.to_csv(self.metrics_dir / 'backbone_val_loss.csv', index=False)
+
+        # Save memory stats
+        if self.memory_stats:
+            mem_df = pd.DataFrame(self.memory_stats)
+            mem_df.to_csv(self.metrics_dir / 'gpu_memory_stats.csv', index=False)
+            print(f"GPU Memory Stats saved. Peak usage: {mem_df['max_allocated_gb'].max():.2f} GB")
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint.

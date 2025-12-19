@@ -249,3 +249,33 @@ def batch_compute_fingerprints(
             valid_indices.append(i)
 
     return fingerprints, valid_indices
+
+
+def parallel_compute_sa_scores(
+    smiles_list: List[str],
+    num_workers: int = 8,
+    chunksize: int = 100
+) -> List[Optional[float]]:
+    """Compute SA scores in parallel using multiprocessing.
+
+    Args:
+        smiles_list: List of SMILES strings.
+        num_workers: Number of parallel workers.
+        chunksize: Chunk size for multiprocessing.
+
+    Returns:
+        List of SA scores (None for failed computations).
+    """
+    from multiprocessing import Pool
+
+    if len(smiles_list) == 0:
+        return []
+
+    # For small lists, use sequential processing (multiprocessing overhead)
+    if len(smiles_list) < 100 or num_workers <= 1:
+        return [compute_sa_score(s) for s in smiles_list]
+
+    with Pool(processes=num_workers) as pool:
+        results = list(pool.imap(compute_sa_score, smiles_list, chunksize=chunksize))
+
+    return results
