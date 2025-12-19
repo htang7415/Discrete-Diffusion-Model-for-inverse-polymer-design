@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.tokenizer import PSmilesTokenizer
 from src.data.data_loader import PolymerDataLoader
@@ -23,6 +23,7 @@ from src.model.backbone import DiffusionBackbone
 from src.model.diffusion import DiscreteMaskingDiffusion
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.training.trainer_property import PropertyTrainer
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -41,6 +42,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 50)
     print(f"Step 3: Training Property Head for {args.property}")
@@ -143,7 +149,9 @@ def main(args):
         beta_min=config['diffusion']['beta_min'],
         beta_max=config['diffusion']['beta_max'],
         mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = checkpoint['model_state_dict']
@@ -163,12 +171,14 @@ def main(args):
 
     # Create property predictor
     train_config = config['training_property']
+    default_timestep = train_config.get('default_timestep', 1)
     model = PropertyPredictor(
         backbone=backbone,
         property_head=property_head,
         freeze_backbone=train_config['freeze_backbone'],
         finetune_last_layers=train_config['finetune_last_layers'],
-        pooling='mean'
+        pooling='mean',
+        default_timestep=default_timestep
     )
 
     # Count parameters

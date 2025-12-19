@@ -21,7 +21,9 @@ class DiscreteMaskingDiffusion(nn.Module):
         beta_min: float = 0.05,
         beta_max: float = 0.95,
         mask_token_id: int = 1,
-        pad_token_id: int = 0
+        pad_token_id: int = 0,
+        bos_token_id: Optional[int] = None,
+        eos_token_id: Optional[int] = None
     ):
         """Initialize diffusion model.
 
@@ -32,6 +34,8 @@ class DiscreteMaskingDiffusion(nn.Module):
             beta_max: Maximum mask probability.
             mask_token_id: ID of the MASK token.
             pad_token_id: ID of the PAD token.
+            bos_token_id: ID of the BOS token (never masked if provided).
+            eos_token_id: ID of the EOS token (never masked if provided).
         """
         super().__init__()
 
@@ -41,6 +45,8 @@ class DiscreteMaskingDiffusion(nn.Module):
         self.beta_max = beta_max
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
 
         # Precompute mask schedule
         self.register_buffer(
@@ -103,6 +109,12 @@ class DiscreteMaskingDiffusion(nn.Module):
             should_mask = should_mask & (attention_mask == 1)
         else:
             should_mask = should_mask & (input_ids != self.pad_token_id)
+
+        # Never mask BOS/EOS tokens if provided
+        if self.bos_token_id is not None:
+            should_mask = should_mask & (input_ids != self.bos_token_id)
+        if self.eos_token_id is not None:
+            should_mask = should_mask & (input_ids != self.eos_token_id)
 
         # Apply masking
         noisy_ids = input_ids.clone()

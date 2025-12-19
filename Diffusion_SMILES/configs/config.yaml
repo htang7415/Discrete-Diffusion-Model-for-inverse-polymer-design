@@ -49,21 +49,21 @@ proxy_backbone:
 
 # Diffusion
 diffusion:
-  num_steps: 100
+  num_steps: 50
   beta_min: 0.05
   beta_max: 0.95
 
 # Training backbone
 training_backbone:
-  batch_size: 512
-  learning_rate: 1e-4
+  batch_size: 256
+  learning_rate: 3e-4
   weight_decay: 0.01
   warmup_steps: 1000
-  max_steps: 1000000
+  max_steps: 200000
   gradient_clip_norm: 1.0
   eval_every: 1000
-  save_every: 200000
-  num_epochs: 100
+  save_every: 100000
+  num_epochs: 50
 
 # Training property heads
 training_property:
@@ -74,6 +74,7 @@ training_property:
   patience: 10
   freeze_backbone: true
   finetune_last_layers: 2
+  default_timestep: 1
 
 # Optimization settings for A100 GPU
 optimization:
@@ -93,7 +94,7 @@ property_head:
 
 # Sampling
 sampling:
-  num_samples: 5000
+  num_samples: 10000
   batch_size: 256
   temperature: 1.0
 

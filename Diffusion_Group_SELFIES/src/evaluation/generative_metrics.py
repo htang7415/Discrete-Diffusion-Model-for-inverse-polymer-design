@@ -10,6 +10,7 @@ from ..utils.chemistry import (
     check_validity,
     count_stars,
     compute_sa_score,
+    canonicalize_smiles,
     compute_fingerprint,
     compute_pairwise_diversity,
     batch_compute_fingerprints
@@ -34,7 +35,7 @@ class GenerativeEvaluator:
             fp_radius: Fingerprint radius.
             fp_bits: Number of fingerprint bits.
         """
-        self.training_smiles = training_smiles
+        self.training_smiles = {canonicalize_smiles(s) or s for s in training_smiles}
         self.fp_type = fp_type
         self.fp_radius = fp_radius
         self.fp_bits = fp_bits
@@ -77,8 +78,11 @@ class GenerativeEvaluator:
         n_valid = len(valid_smiles)
         validity = n_valid / n_total if n_total > 0 else 0.0
 
+        # Canonicalize for uniqueness/novelty
+        canonical_valid = [canonicalize_smiles(s) or s for s in valid_smiles]
+
         # Uniqueness
-        unique_smiles = list(set(valid_smiles))
+        unique_smiles = list(set(canonical_valid))
         n_unique = len(unique_smiles)
         uniqueness = n_unique / n_valid if n_valid > 0 else 0.0
 

@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import DataLoader
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.graph_tokenizer import GraphTokenizer
 from src.data.data_loader import PolymerDataLoader
@@ -24,6 +24,7 @@ from src.model.graph_backbone import GraphDiffusionBackbone, create_graph_backbo
 from src.model.graph_diffusion import GraphMaskingDiffusion, create_graph_diffusion
 from src.model.graph_property_head import GraphPropertyHead, GraphPropertyPredictor
 from src.training.graph_trainer_property import GraphPropertyTrainer
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -42,6 +43,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 50)
     print(f"Step 3: Training Graph Property Head for {args.property}")
@@ -158,12 +164,14 @@ def main(args):
 
     # Create property predictor
     train_config = config['training_property']
+    default_timestep = train_config.get('default_timestep', 1)
     model = GraphPropertyPredictor(
         backbone=backbone,
         property_head=property_head,
         freeze_backbone=train_config['freeze_backbone'],
         finetune_last_layers=train_config['finetune_last_layers'],
-        pooling='mean'
+        pooling='mean',
+        default_timestep=default_timestep
     )
 
     # Count parameters

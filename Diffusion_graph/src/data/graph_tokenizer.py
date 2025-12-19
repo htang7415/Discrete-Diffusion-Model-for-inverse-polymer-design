@@ -8,6 +8,7 @@ Converts p-SMILES strings to fixed-size graph representations (X, E, M) and back
 
 import json
 import numpy as np
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set
 from rdkit import Chem
@@ -548,6 +549,8 @@ def build_atom_vocab_from_data(smiles_list: List[str]) -> Tuple[Dict[str, int], 
 
     # Compute statistics
     atom_counts_arr = np.array(atom_counts)
+    atom_count_distribution = Counter(atom_counts)
+
     statistics = {
         'num_samples': len(smiles_list),
         'num_valid': len(atom_counts),
@@ -568,7 +571,8 @@ def build_atom_vocab_from_data(smiles_list: List[str]) -> Tuple[Dict[str, int], 
             'mean': float(np.mean(bond_counts)) if bond_counts else 0,
         },
         'atom_type_distribution': atom_type_counter,
-        'bond_type_distribution': bond_type_counter
+        'bond_type_distribution': bond_type_counter,
+        'atom_count_distribution': {str(k): int(v) for k, v in atom_count_distribution.items()}
     }
 
     return atom_vocab, statistics

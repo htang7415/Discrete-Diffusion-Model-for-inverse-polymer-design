@@ -15,10 +15,11 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.data_loader import PolymerDataLoader
 from src.data.graph_tokenizer import GraphTokenizer, build_atom_vocab_from_data
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def test_graph_invertibility(smiles_list, graph_tokenizer, max_samples=None):
@@ -62,6 +63,11 @@ def main(args):
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     # Initialize data loader
     data_loader = PolymerDataLoader(config)
@@ -124,7 +130,8 @@ def main(args):
         'stereo_vocab': stereo_vocab,
         'atom_vocab_size': len(atom_vocab),
         'edge_vocab_size': len(edge_vocab),
-        'stereo_vocab_size': len(stereo_vocab)
+        'stereo_vocab_size': len(stereo_vocab),
+        'atom_count_distribution': graph_stats.get('atom_count_distribution', {})
     }
 
     graph_config_path = results_dir / 'graph_config.json'

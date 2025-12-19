@@ -163,6 +163,11 @@ class DiffusionBackbone(nn.Module):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.ffn_hidden_size = ffn_hidden_size
+        self.max_position_embeddings = max_position_embeddings
+        self.num_diffusion_steps = num_diffusion_steps
+        self.dropout = dropout
         self.pad_token_id = pad_token_id
 
         # Embeddings
@@ -334,6 +339,11 @@ class DiffusionBackbone(nn.Module):
                 'vocab_size': self.vocab_size,
                 'hidden_size': self.hidden_size,
                 'num_layers': self.num_layers,
+                'num_heads': self.num_heads,
+                'ffn_hidden_size': self.ffn_hidden_size,
+                'max_position_embeddings': self.max_position_embeddings,
+                'num_diffusion_steps': self.num_diffusion_steps,
+                'dropout': self.dropout,
                 'pad_token_id': self.pad_token_id
             }
         }, path)

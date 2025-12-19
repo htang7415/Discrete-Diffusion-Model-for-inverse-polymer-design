@@ -71,7 +71,7 @@ class BackboneTrainer:
 
         # Optimization config
         opt_config = config.get('optimization', {})
-        self.use_amp = opt_config.get('use_amp', False)
+        self.use_amp = opt_config.get('use_amp', False) and device == 'cuda'
         self.compile_model = opt_config.get('compile_model', False)
         self.grad_accum_steps = opt_config.get('gradient_accumulation_steps', 1)
 

@@ -79,7 +79,7 @@ class GraphPropertyPredictor(nn.Module):
         freeze_backbone: bool = True,
         finetune_last_layers: int = 0,
         pooling: str = 'mean',
-        default_timestep: int = 0
+        default_timestep: int = 1
     ):
         """Initialize graph property predictor.
 

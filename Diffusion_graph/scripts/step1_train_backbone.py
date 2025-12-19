@@ -14,13 +14,14 @@ import torch
 import pandas as pd
 from torch.utils.data import DataLoader
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.graph_tokenizer import GraphTokenizer
 from src.data.dataset import GraphPolymerDataset, graph_collate_fn
 from src.model.graph_backbone import GraphDiffusionBackbone
 from src.model.graph_diffusion import GraphMaskingDiffusion
 from src.training.graph_trainer_backbone import GraphBackboneTrainer
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -39,6 +40,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 60)
     print("Step 1: Training Graph Diffusion Backbone")

@@ -13,10 +13,11 @@ import random
 import pandas as pd
 import numpy as np
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.data_loader import PolymerDataLoader
 from src.data.tokenizer import GroupSELFIESTokenizer
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -32,6 +33,11 @@ def main(args):
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     # Initialize data loader
     data_loader = PolymerDataLoader(config)

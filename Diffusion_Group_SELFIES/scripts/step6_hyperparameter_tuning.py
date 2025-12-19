@@ -12,13 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import torch
 import pandas as pd
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.data.tokenizer import GroupSELFIESTokenizer
 from src.data.data_loader import PolymerDataLoader
 from src.data.dataset import PolymerDataset, PropertyDataset
 from src.model.backbone import DiffusionBackbone
 from src.model.diffusion import DiscreteMaskingDiffusion
 from src.training.hyperparameter_tuning import BackboneTuner, PropertyHeadTuner
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def tune_backbone(args, config, device):
@@ -118,7 +119,9 @@ def tune_property_head(args, config, device):
         beta_min=config['diffusion']['beta_min'],
         beta_max=config['diffusion']['beta_max'],
         mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
 
     backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device)
@@ -164,6 +167,15 @@ def main(args):
     """Main function."""
     # Load config
     config = load_config(args.config)
+
+    results_dir = Path(config['paths']['results_dir'])
+    step_dir = results_dir / 'step6_tuning'
+    step_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     # Set device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

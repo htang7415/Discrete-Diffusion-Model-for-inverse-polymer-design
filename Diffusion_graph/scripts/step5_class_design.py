@@ -14,7 +14,7 @@ import torch
 import pandas as pd
 import numpy as np
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.utils.chemistry import compute_sa_score
 from src.data.graph_tokenizer import GraphTokenizer
@@ -23,6 +23,7 @@ from src.model.graph_diffusion import create_graph_diffusion
 from src.model.graph_property_head import GraphPropertyHead, GraphPropertyPredictor
 from src.sampling.graph_sampler import create_graph_sampler
 from src.evaluation.polymer_class import PolymerClassifier, GraphClassGuidedDesigner
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -44,6 +45,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 50)
     print(f"Step 5: Graph Class-Guided Design for {args.polymer_class}")
@@ -89,7 +95,8 @@ def main(args):
     sampler = create_graph_sampler(
         diffusion_model=diffusion_model,
         tokenizer=tokenizer,
-        config=config
+        config=config,
+        graph_config=graph_config
     )
 
     # Load property predictor if specified
@@ -109,7 +116,8 @@ def main(args):
             backbone=diffusion_model.backbone,
             property_head=property_head,
             freeze_backbone=True,
-            pooling='mean'
+            pooling='mean',
+            default_timestep=config['training_property'].get('default_timestep', 1)
         )
         property_predictor.load_property_head(results_dir / 'checkpoints' / f'{args.property}_best.pt')
         property_predictor = property_predictor.to(device)

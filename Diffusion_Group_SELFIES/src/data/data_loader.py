@@ -77,6 +77,10 @@ class PolymerDataLoader:
         df = df[[smiles_col, value_col]].copy()
         df.columns = ['p_smiles', property_name]
 
+        df[property_name] = pd.to_numeric(df[property_name], errors='coerce')
+        df = df.dropna(subset=['p_smiles', property_name]).copy()
+        df = df[np.isfinite(df[property_name])].copy()
+
         return df
 
     def clean_and_filter(

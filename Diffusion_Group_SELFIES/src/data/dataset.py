@@ -1,5 +1,7 @@
 """PyTorch Dataset classes for polymer data with Group SELFIES tokenization."""
 
+import math
+import warnings
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
@@ -130,6 +132,12 @@ class PropertyDataset(Dataset):
         if normalize:
             self.mean = mean if mean is not None else df[property_name].mean()
             self.std = std if std is not None else df[property_name].std()
+            if self.mean is None or not math.isfinite(self.mean):
+                warnings.warn("Property mean is not finite; defaulting to 0.0.", RuntimeWarning)
+                self.mean = 0.0
+            if self.std is None or not math.isfinite(self.std) or self.std == 0:
+                warnings.warn("Property std is not finite or zero; defaulting to 1.0.", RuntimeWarning)
+                self.std = 1.0
         else:
             self.mean = 0.0
             self.std = 1.0

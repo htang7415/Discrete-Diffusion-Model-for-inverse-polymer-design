@@ -266,10 +266,10 @@ class ConstrainedSampler:
                         logits[i, pos, self.close_paren_id] = float('-inf')
 
                 # Rule 2: Cannot place '(' if not enough room to close it
-                # If we place '(' here, we need at least one position to close it
-                # d_left + 1 (new open) must be <= n_right - 1 (remaining after this)
-                # Simplified: d_left + 1 > n_right means we can't close
-                if d_left + 1 > n_right:
+                # If we place '(' here, we need at least one position to close it.
+                # Remaining slots after this position: n_right - 1
+                # Need: (d_left + 1) <= (n_right - 1) => d_left + 2 <= n_right
+                if d_left + 2 > n_right:
                     if self.open_paren_id >= 0:
                         logits[i, pos, self.open_paren_id] = float('-inf')
 
@@ -383,19 +383,24 @@ class ConstrainedSampler:
                     for bond_id in self.bond_ids:
                         logits[i, pos, bond_id] = float('-inf')
 
-                # 2. Previous is open parenthesis
+                # 2. Previous is BOS/EOS/PAD (treat as start)
+                elif prev_token_id in [self.bos_id, self.eos_id, self.pad_id]:
+                    for bond_id in self.bond_ids:
+                        logits[i, pos, bond_id] = float('-inf')
+
+                # 3. Previous is open parenthesis
                 elif prev_token_id == self.open_paren_id:
                     for bond_id in self.bond_ids:
                         logits[i, pos, bond_id] = float('-inf')
                     # Also forbid close paren immediately after open paren (prevents empty parens)
                     logits[i, pos, self.close_paren_id] = float('-inf')
 
-                # 3. Previous is close parenthesis (conservative)
+                # 4. Previous is close parenthesis (conservative)
                 elif prev_token_id == self.close_paren_id:
                     for bond_id in self.bond_ids:
                         logits[i, pos, bond_id] = float('-inf')
 
-                # 4. Previous is a bond (no consecutive bonds)
+                # 5. Previous is a bond (no consecutive bonds)
                 elif prev_token_id in self.bond_ids:
                     for bond_id in self.bond_ids:
                         logits[i, pos, bond_id] = float('-inf')

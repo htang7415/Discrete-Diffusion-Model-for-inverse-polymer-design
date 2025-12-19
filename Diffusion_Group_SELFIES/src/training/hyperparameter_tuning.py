@@ -1,5 +1,6 @@
 """Hyperparameter tuning utilities."""
 
+import ast
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
@@ -158,7 +159,9 @@ class BackboneTuner:
             beta_min=self.config['diffusion']['beta_min'],
             beta_max=self.config['diffusion']['beta_max'],
             mask_token_id=self.tokenizer.mask_token_id,
-            pad_token_id=self.tokenizer.pad_token_id
+            pad_token_id=self.tokenizer.pad_token_id,
+            bos_token_id=self.tokenizer.bos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id
         ).to(self.device)
 
         # Optimizer
@@ -337,7 +340,7 @@ class PropertyHeadTuner:
 
         hidden_sizes = params['hidden_sizes']
         if isinstance(hidden_sizes, str):
-            hidden_sizes = eval(hidden_sizes)
+            hidden_sizes = ast.literal_eval(hidden_sizes)
 
         # Create property head
         head = PropertyHead(
@@ -350,7 +353,8 @@ class PropertyHeadTuner:
             backbone=self.backbone,
             property_head=head,
             freeze_backbone=True,
-            pooling='mean'
+            pooling='mean',
+            default_timestep=self.config['training_property'].get('default_timestep', 1)
         ).to(self.device)
 
         # Optimizer

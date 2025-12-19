@@ -56,6 +56,8 @@ class ConstrainedSampler:
         if self.placeholder_id is None:
             # Fallback: try to find placeholder token in vocab
             self._find_placeholder_id()
+        if self.placeholder_id is None:
+            raise ValueError("Placeholder token not found in tokenizer vocabulary; rebuild tokenizer with the placeholder settings.")
 
         # For backward compatibility with code that uses star_id
         self.star_id = self.placeholder_id
@@ -73,8 +75,7 @@ class ConstrainedSampler:
                 self.placeholder_id = token_id
                 return
 
-        # If not found, use UNK token as fallback
-        self.placeholder_id = self.unk_id
+        self.placeholder_id = None
 
     def _count_placeholders(self, ids: torch.Tensor) -> torch.Tensor:
         """Count placeholder tokens in each sequence.

@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.utils.chemistry import compute_sa_score, count_stars
 from src.data.graph_tokenizer import GraphTokenizer
@@ -23,6 +23,7 @@ from src.model.graph_backbone import GraphDiffusionBackbone
 from src.model.graph_diffusion import GraphMaskingDiffusion
 from src.sampling.graph_sampler import GraphSampler
 from src.evaluation.generative_metrics import GenerativeEvaluator
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -41,6 +42,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 60)
     print("Step 2: Graph Sampling and Generative Evaluation")
@@ -121,7 +127,8 @@ def main(args):
         backbone=model.backbone,
         graph_tokenizer=graph_tokenizer,
         num_steps=diffusion_config['num_steps'],
-        device=device
+        device=device,
+        atom_count_distribution=graph_config.get('atom_count_distribution')
     )
 
     # Sample

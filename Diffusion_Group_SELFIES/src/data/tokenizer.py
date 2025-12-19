@@ -2,6 +2,8 @@
 
 import re
 import pickle
+import contextlib
+import os
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from tqdm import tqdm
@@ -19,6 +21,14 @@ from functools import partial
 RDLogger.DisableLog('rdApp.*')
 
 
+@contextlib.contextmanager
+def _suppress_stdout_stderr():
+    """Suppress noisy third-party stdout/stderr (e.g., attachment point warnings)."""
+    with open(os.devnull, 'w') as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
+
+
 def _select_diverse_set_simple(l, k, weights=None):
     """Simple non-recursive replacement for fragment_utils.select_diverse_set.
 
@@ -33,6 +43,16 @@ def _select_diverse_set_simple(l, k, weights=None):
         items.sort(key=lambda x: x[1], reverse=True)
         return [x[0] for x in items[:k]]
     return list(l)[:k]
+
+
+def _unique_in_order(items):
+    seen = set()
+    unique = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
 
 
 # Patch the fragment_utils to use simple selection
@@ -73,7 +93,8 @@ def _fragment_batch_worker(smiles_batch, placeholder_smiles):
         return []
 
     try:
-        groups = fragment_mols(mols)
+        with _suppress_stdout_stderr():
+            groups = fragment_mols(mols)
         return groups if groups else []
     except Exception as e:
         # Log error but don't crash worker
@@ -116,7 +137,8 @@ def _tokenize_batch_worker(smiles_batch, grammar, placeholder_smiles):
 
         # Encode to Group SELFIES
         try:
-            gsf_string = grammar.full_encoder(mol)
+            with _suppress_stdout_stderr():
+                gsf_string = grammar.full_encoder(mol)
 
             # Parse Group SELFIES string into tokens
             # Group SELFIES tokens are bracket-enclosed: [token1][token2]...
@@ -177,7 +199,8 @@ def _verify_roundtrip_worker(smiles_batch, grammar, placeholder_smiles):
                 continue
 
             # Encode to Group SELFIES
-            gsf_string = grammar.full_encoder(mol_orig)
+            with _suppress_stdout_stderr():
+                gsf_string = grammar.full_encoder(mol_orig)
 
             # Parse into tokens (simplified from _parse_gsf_string)
             tokens = []
@@ -200,7 +223,8 @@ def _verify_roundtrip_worker(smiles_batch, grammar, placeholder_smiles):
 
             # Step 2: Detokenize (decode)
             decoded_gsf_string = ''.join(tokens)
-            mol_decoded = grammar.decoder(decoded_gsf_string)
+            with _suppress_stdout_stderr():
+                mol_decoded = grammar.decoder(decoded_gsf_string)
             if mol_decoded is None:
                 continue
 
@@ -315,7 +339,8 @@ class GroupSELFIESTokenizer:
 
         try:
             # Encode to Group SELFIES
-            gsf_string = self.grammar.full_encoder(mol)
+            with _suppress_stdout_stderr():
+                gsf_string = self.grammar.full_encoder(mol)
 
             # Parse Group SELFIES string into tokens
             # Group SELFIES format: [token1][token2][token3]...
@@ -389,7 +414,8 @@ class GroupSELFIESTokenizer:
 
         try:
             # Decode to RDKit Mol
-            mol = self.grammar.decoder(gsf_string)
+            with _suppress_stdout_stderr():
+                mol = self.grammar.decoder(gsf_string)
             if mol is None:
                 return ""
 
@@ -454,10 +480,13 @@ class GroupSELFIESTokenizer:
                 if mol is not None:
                     mols_for_grammar.append(mol)
 
-            raw_groups = fragment_mols(mols_for_grammar)
+            with _suppress_stdout_stderr():
+                raw_groups = fragment_mols(mols_for_grammar)
 
         if not raw_groups:
             raise RuntimeError("fragment_mols returned no groups; cannot build GroupGrammar.")
+
+        raw_groups = _unique_in_order(raw_groups)
 
         # Limit number of groups
         if len(raw_groups) > max_groups:
@@ -556,9 +585,9 @@ class GroupSELFIESTokenizer:
             # Parallel processing
             with Pool(processes=num_workers) as pool:
                 if verbose:
-                    # Use imap_unordered for progress tracking
+                    # Use imap for ordered, deterministic progress tracking
                     results = list(tqdm(
-                        pool.imap_unordered(worker_func, chunks),
+                        pool.imap(worker_func, chunks),
                         total=len(chunks),
                         desc="Fragmenting chunks"
                     ))
@@ -569,13 +598,7 @@ class GroupSELFIESTokenizer:
                 for groups in results:
                     all_groups.extend(groups)
 
-        # Remove duplicates while preserving order (deterministic)
-        unique_groups = []
-        seen = set()
-        for group in all_groups:
-            if group not in seen:
-                seen.add(group)
-                unique_groups.append(group)
+        unique_groups = _unique_in_order(all_groups)
 
         if verbose:
             print(f"Found {len(all_groups)} total fragments ({len(unique_groups)} unique)")

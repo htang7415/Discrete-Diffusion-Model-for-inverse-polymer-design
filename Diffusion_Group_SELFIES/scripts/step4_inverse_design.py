@@ -13,7 +13,7 @@ import torch
 import pandas as pd
 import numpy as np
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.utils.chemistry import compute_sa_score
 from src.data.tokenizer import GroupSELFIESTokenizer
@@ -22,6 +22,7 @@ from src.model.diffusion import DiscreteMaskingDiffusion
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.sampling.sampler import ConstrainedSampler
 from src.evaluation.inverse_design import InverseDesigner
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -40,6 +41,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 50)
     print(f"Step 4: Inverse Design for {args.property}")
@@ -75,7 +81,9 @@ def main(args):
         beta_min=config['diffusion']['beta_min'],
         beta_max=config['diffusion']['beta_max'],
         mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
 
     backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device)
@@ -114,7 +122,8 @@ def main(args):
         backbone=diffusion_model.backbone,
         property_head=property_head,
         freeze_backbone=True,
-        pooling='mean'
+        pooling='mean',
+        default_timestep=config['training_property'].get('default_timestep', 1)
     )
     property_predictor.load_property_head(results_dir / 'checkpoints' / f'{args.property}_best.pt')
     property_predictor = property_predictor.to(device)

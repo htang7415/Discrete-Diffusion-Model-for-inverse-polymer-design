@@ -33,7 +33,8 @@ class GraphSampler:
         edge_none_id: int = 0,
         edge_single_id: int = 1,
         edge_mask_id: int = 5,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        atom_count_distribution: Optional[Dict[int, int]] = None
     ):
         """Initialize GraphSampler.
 
@@ -64,6 +65,58 @@ class GraphSampler:
         self.edge_mask_id = edge_mask_id
 
         self.Nmax = graph_tokenizer.Nmax
+        self.atom_count_values = None
+        self.atom_count_probs = None
+
+        if atom_count_distribution:
+            values = []
+            weights = []
+            for key, count in atom_count_distribution.items():
+                try:
+                    value = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if value <= 0:
+                    continue
+                values.append(value)
+                weights.append(float(count))
+
+            if values and sum(weights) > 0:
+                order = np.argsort(values)
+                values = np.array(values)[order]
+                weights = np.array(weights, dtype=np.float64)[order]
+                self.atom_count_values = values
+                self.atom_count_probs = weights / weights.sum()
+
+    def _sample_num_atoms(self, batch_size: int) -> List[int]:
+        """Sample number of atoms per graph from the empirical distribution."""
+        if self.atom_count_values is None:
+            return [self.Nmax] * batch_size
+
+        samples = np.random.choice(
+            self.atom_count_values,
+            size=batch_size,
+            p=self.atom_count_probs
+        )
+        samples = np.clip(samples, 1, self.Nmax)
+        return samples.tolist()
+
+    def _apply_node_special_token_constraints(
+        self,
+        node_logits: torch.Tensor,
+        X_current: torch.Tensor,
+        M: torch.Tensor
+    ) -> torch.Tensor:
+        """Forbid MASK/PAD tokens at valid masked node positions."""
+        B, N, _ = node_logits.shape
+        node_logits = node_logits.clone()
+
+        for b in range(B):
+            mask_positions = (X_current[b] == self.mask_id) & (M[b] == 1)
+            node_logits[b, mask_positions, self.mask_id] = -float('inf')
+            node_logits[b, mask_positions, self.pad_id] = -float('inf')
+
+        return node_logits
 
     def _apply_star_constraints(
         self,
@@ -283,16 +336,28 @@ class GraphSampler:
         N = self.Nmax
         T = self.num_steps
 
-        # Initialize fully masked
-        X = torch.full((batch_size, N), self.mask_id, dtype=torch.long, device=device)
-        E = torch.full((batch_size, N, N), self.edge_mask_id, dtype=torch.long, device=device)
-
-        # Node mask (all valid for now, will be refined)
-        if num_atoms is not None:
-            M = torch.zeros((batch_size, N), dtype=torch.float, device=device)
-            M[:, :num_atoms] = 1.0
+        # Determine atom counts for each sample
+        if num_atoms is None:
+            num_atoms_list = self._sample_num_atoms(batch_size)
         else:
-            M = torch.ones((batch_size, N), dtype=torch.float, device=device)
+            num_atoms_list = [int(num_atoms)] * batch_size
+
+        # Node mask
+        M = torch.zeros((batch_size, N), dtype=torch.float, device=device)
+        for b, n_atoms in enumerate(num_atoms_list):
+            n_atoms = min(max(int(n_atoms), 1), N)
+            M[b, :n_atoms] = 1.0
+
+        # Initialize nodes: PAD everywhere, MASK for valid nodes
+        X = torch.full((batch_size, N), self.pad_id, dtype=torch.long, device=device)
+        X[M == 1] = self.mask_id
+
+        # Initialize edges: NONE everywhere, MASK for valid node pairs (no self-loops)
+        E = torch.full((batch_size, N, N), self.edge_none_id, dtype=torch.long, device=device)
+        valid_edge_mask = (M.unsqueeze(2) * M.unsqueeze(1)).bool()
+        diag = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)
+        valid_edge_mask = valid_edge_mask & (~diag)
+        E[valid_edge_mask] = self.edge_mask_id
 
         # Progress bar
         iterator = range(T, 0, -1)
@@ -315,14 +380,16 @@ class GraphSampler:
 
             # Apply constraints
             node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+            node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
             edge_logits = self._apply_edge_constraints(edge_logits, X, M)
+            edge_logits[valid_edge_mask, self.edge_mask_id] = -float('inf')
 
             # Enforce symmetry in edge logits
             edge_logits = (edge_logits + edge_logits.transpose(1, 2)) / 2
 
             # Sample nodes (only update masked positions)
             node_probs = F.softmax(node_logits, dim=-1)
-            is_node_masked = X == self.mask_id
+            is_node_masked = (X == self.mask_id) & (M == 1)
 
             if is_node_masked.any():
                 masked_probs = node_probs[is_node_masked]
@@ -335,7 +402,7 @@ class GraphSampler:
 
             # Sample edges (only update masked positions)
             edge_probs = F.softmax(edge_logits, dim=-1)
-            is_edge_masked = E == self.edge_mask_id
+            is_edge_masked = (E == self.edge_mask_id) & valid_edge_mask
 
             if is_edge_masked.any():
                 masked_probs = edge_probs[is_edge_masked]
@@ -387,10 +454,25 @@ class GraphSampler:
         N = self.Nmax
         T = self.num_steps
 
-        # Initialize fully masked
-        X = torch.full((batch_size, N), self.mask_id, dtype=torch.long, device=device)
-        E = torch.full((batch_size, N, N), self.edge_mask_id, dtype=torch.long, device=device)
-        M = torch.ones((batch_size, N), dtype=torch.float, device=device)
+        # Determine atom counts for each sample
+        num_atoms_list = self._sample_num_atoms(batch_size)
+
+        # Node mask
+        M = torch.zeros((batch_size, N), dtype=torch.float, device=device)
+        for b, n_atoms in enumerate(num_atoms_list):
+            n_atoms = min(max(int(n_atoms), 1), N)
+            M[b, :n_atoms] = 1.0
+
+        # Initialize nodes: PAD everywhere, MASK for valid nodes
+        X = torch.full((batch_size, N), self.pad_id, dtype=torch.long, device=device)
+        X[M == 1] = self.mask_id
+
+        # Initialize edges: NONE everywhere, MASK for valid node pairs (no self-loops)
+        E = torch.full((batch_size, N, N), self.edge_none_id, dtype=torch.long, device=device)
+        valid_edge_mask = (M.unsqueeze(2) * M.unsqueeze(1)).bool()
+        diag = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)
+        valid_edge_mask = valid_edge_mask & (~diag)
+        E[valid_edge_mask] = self.edge_mask_id
 
         iterator = range(T, 0, -1)
         if show_progress:
@@ -409,11 +491,13 @@ class GraphSampler:
             edge_logits = edge_logits / temperature
 
             node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+            node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
             edge_logits = self._apply_edge_constraints(edge_logits, X, M)
+            edge_logits[valid_edge_mask, self.edge_mask_id] = -float('inf')
             edge_logits = (edge_logits + edge_logits.transpose(1, 2)) / 2
 
             node_probs = F.softmax(node_logits, dim=-1)
-            is_node_masked = X == self.mask_id
+            is_node_masked = (X == self.mask_id) & (M == 1)
 
             if is_node_masked.any():
                 masked_probs = node_probs[is_node_masked].clamp(min=1e-10)
@@ -423,7 +507,7 @@ class GraphSampler:
                 X[is_node_masked] = sampled_nodes
 
             edge_probs = F.softmax(edge_logits, dim=-1)
-            is_edge_masked = E == self.edge_mask_id
+            is_edge_masked = (E == self.edge_mask_id) & valid_edge_mask
 
             if is_edge_masked.any():
                 masked_probs = edge_probs[is_edge_masked].clamp(min=1e-10)
@@ -454,9 +538,12 @@ class GraphSampler:
 
 
 def create_graph_sampler(
-    backbone: nn.Module,
-    graph_tokenizer,
-    config: Dict
+    backbone: Optional[nn.Module] = None,
+    graph_tokenizer=None,
+    config: Optional[Dict] = None,
+    diffusion_model: Optional[nn.Module] = None,
+    tokenizer=None,
+    graph_config: Optional[Dict] = None
 ) -> GraphSampler:
     """Create GraphSampler from config.
 
@@ -464,15 +551,32 @@ def create_graph_sampler(
         backbone: Graph transformer backbone.
         graph_tokenizer: GraphTokenizer instance.
         config: Configuration dictionary.
+        diffusion_model: Optional diffusion model wrapper (uses .backbone).
+        tokenizer: Optional alias for graph_tokenizer.
+        graph_config: Optional graph configuration (for atom count distribution).
 
     Returns:
         GraphSampler instance.
     """
-    diffusion_config = config.get('diffusion', config.get('graph_diffusion', {}))
+    if diffusion_model is not None:
+        backbone = diffusion_model.backbone
+    if tokenizer is not None:
+        graph_tokenizer = tokenizer
+    if backbone is None or graph_tokenizer is None:
+        raise ValueError("backbone and graph_tokenizer must be provided")
+
+    diffusion_config = {}
+    if config is not None:
+        diffusion_config = config.get('diffusion', config.get('graph_diffusion', {}))
+
+    atom_count_distribution = None
+    if graph_config is not None:
+        atom_count_distribution = graph_config.get('atom_count_distribution')
 
     return GraphSampler(
         backbone=backbone,
         graph_tokenizer=graph_tokenizer,
         num_steps=diffusion_config.get('num_steps', 100),
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        atom_count_distribution=atom_count_distribution
     )

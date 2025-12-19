@@ -13,7 +13,7 @@ import torch
 import pandas as pd
 import numpy as np
 
-from src.utils.config import load_config
+from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.utils.chemistry import compute_sa_score
 from src.data.tokenizer import PSmilesTokenizer
@@ -21,6 +21,7 @@ from src.model.backbone import DiffusionBackbone
 from src.model.diffusion import DiscreteMaskingDiffusion
 from src.sampling.sampler import ConstrainedSampler
 from src.evaluation.generative_metrics import GenerativeEvaluator
+from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 def main(args):
@@ -39,6 +40,11 @@ def main(args):
     figures_dir = step_dir / 'figures'
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # Reproducibility
+    seed_info = seed_everything(config['data']['random_seed'])
+    save_config(config, step_dir / 'config_used.yaml')
+    save_run_metadata(step_dir, args.config, seed_info)
 
     print("=" * 50)
     print("Step 2: Sampling and Generative Evaluation")
@@ -78,7 +84,9 @@ def main(args):
         beta_min=config['diffusion']['beta_min'],
         beta_max=config['diffusion']['beta_max'],
         mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id
     )
 
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
