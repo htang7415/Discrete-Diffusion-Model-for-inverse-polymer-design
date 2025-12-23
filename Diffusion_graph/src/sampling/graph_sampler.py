@@ -382,7 +382,7 @@ class GraphSampler:
             node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
             node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
             edge_logits = self._apply_edge_constraints(edge_logits, X, M)
-            edge_logits[valid_edge_mask, self.edge_mask_id] = -float('inf')
+            edge_logits[:, :, :, self.edge_mask_id][valid_edge_mask] = -float('inf')
 
             # Enforce symmetry in edge logits
             edge_logits = (edge_logits + edge_logits.transpose(1, 2)) / 2
@@ -493,7 +493,7 @@ class GraphSampler:
             node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
             node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
             edge_logits = self._apply_edge_constraints(edge_logits, X, M)
-            edge_logits[valid_edge_mask, self.edge_mask_id] = -float('inf')
+            edge_logits[:, :, :, self.edge_mask_id][valid_edge_mask] = -float('inf')
             edge_logits = (edge_logits + edge_logits.transpose(1, 2)) / 2
 
             node_probs = F.softmax(node_logits, dim=-1)

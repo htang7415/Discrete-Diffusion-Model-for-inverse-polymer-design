@@ -117,7 +117,9 @@ class PlotUtils:
         ylabel: str = "Loss",
         title: Optional[str] = None,
         save_path: Optional[str] = None,
-        log_scale: bool = False
+        log_scale: bool = False,
+        train_label: str = "Train",
+        val_label: str = "Validation"
     ) -> plt.Figure:
         """Create loss curve plot.
 
@@ -129,6 +131,8 @@ class PlotUtils:
             title: Plot title.
             save_path: Path to save the figure.
             log_scale: Whether to use log scale for y-axis.
+            train_label: Label for train loss curve.
+            val_label: Label for validation loss curve.
 
         Returns:
             Matplotlib figure.
@@ -136,7 +140,7 @@ class PlotUtils:
         fig, ax = plt.subplots(figsize=self.figure_size)
 
         steps = np.arange(1, len(train_losses) + 1)
-        ax.plot(steps, train_losses, label='Train', color='blue')
+        ax.plot(steps, train_losses, label=train_label, color='blue')
 
         if val_losses:
             val_steps = np.arange(1, len(val_losses) + 1)
@@ -144,7 +148,7 @@ class PlotUtils:
             if len(val_losses) < len(train_losses):
                 ratio = len(train_losses) // len(val_losses)
                 val_steps = val_steps * ratio
-            ax.plot(val_steps, val_losses, label='Validation', color='orange')
+            ax.plot(val_steps, val_losses, label=val_label, color='orange')
 
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
