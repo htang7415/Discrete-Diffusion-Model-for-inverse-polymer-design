@@ -120,11 +120,24 @@ def main(args):
             show_progress=True
         )
     else:
+        # Sample lengths from training distribution (token length + BOS/EOS)
+        replace = args.num_samples > len(train_df)
+        sampled = train_df['p_smiles'].sample(
+            n=args.num_samples,
+            replace=replace,
+            random_state=config['data']['random_seed']
+        )
+        lengths = [
+            min(len(tokenizer.tokenize(s)) + 2, tokenizer.max_length)
+            for s in sampled.tolist()
+        ]
+        print(f"   Using training length distribution (min={min(lengths)}, max={max(lengths)})")
         _, generated_smiles = sampler.sample_batch(
             num_samples=args.num_samples,
             seq_length=tokenizer.max_length,
             batch_size=batch_size,
-            show_progress=True
+            show_progress=True,
+            lengths=lengths
         )
 
     # Save generated samples

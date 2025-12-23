@@ -300,6 +300,7 @@ class PropertyTrainer:
                 self._maybe_mark_cudagraph_step_begin()
                 with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
                     preds = self.model.predict(input_ids, attention_mask)
+                preds = preds.float()
                 all_preds.extend(preds.cpu().numpy().tolist())
                 all_labels.extend(labels.cpu().numpy().tolist())
 

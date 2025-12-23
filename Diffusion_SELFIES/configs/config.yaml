@@ -73,13 +73,13 @@ training_backbone:
 
 # Training property heads
 training_property:
-  batch_size: 256
-  learning_rate: 1e-4
+  batch_size: 64
+  learning_rate: 1e-3
   weight_decay: 0.01
-  num_epochs: 500
-  patience: 10
+  num_epochs: 300
+  patience: 30
   freeze_backbone: true
-  finetune_last_layers: 2
+  finetune_last_layers: 4
   default_timestep: 1
 
 # Optimization settings for A100 GPU
@@ -96,7 +96,7 @@ optimization:
 
 # Property head architecture
 property_head:
-  hidden_sizes: [256, 64]
+  hidden_sizes: [256, 512, 512, 128]
   dropout: 0.1
 
 # Sampling

@@ -225,58 +225,38 @@ class ConstrainedSampler:
         Returns:
             Modified logits with invalid tokens masked out.
         """
-        batch_size, seq_len, vocab_size = logits.shape
+        if self.open_paren_id < 0 and self.close_paren_id < 0:
+            return logits
 
-        for i in range(batch_size):
-            seq = current_ids[i]
+        is_masked = current_ids == self.mask_id
+        if not is_masked.any():
+            return logits
 
-            # Precompute depth from LEFT for each position
-            # depth_at_pos[j] = net (opens - closes) from unmasked tokens in positions 0..j-1
-            depth_at_pos = []
-            depth = 0
-            for j in range(seq_len):
-                depth_at_pos.append(depth)
-                token_id = seq[j].item()
-                # Only count unmasked parentheses
-                if token_id == self.open_paren_id:
-                    depth += 1
-                elif token_id == self.close_paren_id:
-                    depth -= 1
-                # masked tokens don't affect depth yet
+        open_mask = current_ids == self.open_paren_id
+        close_mask = current_ids == self.close_paren_id
+        depth_delta = open_mask.int() - close_mask.int()
+        depth_prefix = depth_delta.cumsum(dim=1)
+        depth_at_pos = torch.cat(
+            [torch.zeros_like(depth_prefix[:, :1]), depth_prefix[:, :-1]],
+            dim=1
+        )
 
-            # Count masked positions from each index to end (including that index)
-            masked_from_pos = []
-            count = 0
-            for j in range(seq_len - 1, -1, -1):
-                if seq[j].item() == self.mask_id:
-                    count += 1
-                masked_from_pos.insert(0, count)
+        masked_from_pos = torch.flip(
+            torch.cumsum(torch.flip(is_masked.int(), dims=[1]), dim=1),
+            dims=[1]
+        )
 
-            # Apply position-specific constraints
-            for pos in range(seq_len):
-                if seq[pos] != self.mask_id:
-                    continue
+        if self.close_paren_id >= 0:
+            invalid_close = is_masked & (depth_at_pos <= 0)
+            logits[:, :, self.close_paren_id].masked_fill_(invalid_close, float('-inf'))
 
-                d_left = depth_at_pos[pos]  # Depth from unmasked tokens to the left
-                n_right = masked_from_pos[pos]  # Masked positions from here to end
+        if self.open_paren_id >= 0:
+            invalid_open = is_masked & (depth_at_pos + 2 > masked_from_pos)
+            logits[:, :, self.open_paren_id].masked_fill_(invalid_open, float('-inf'))
 
-                # Rule 1: Cannot place ')' if no unclosed '(' to the left
-                if d_left <= 0:
-                    if self.close_paren_id >= 0:
-                        logits[i, pos, self.close_paren_id] = float('-inf')
-
-                # Rule 2: Cannot place '(' if not enough room to close it
-                # If we place '(' here, we need at least one position to close it.
-                # Remaining slots after this position: n_right - 1
-                # Need: (d_left + 1) <= (n_right - 1) => d_left + 2 <= n_right
-                if d_left + 2 > n_right:
-                    if self.open_paren_id >= 0:
-                        logits[i, pos, self.open_paren_id] = float('-inf')
-
-                # Rule 3: Forbid special tokens
-                for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
-                    if tok >= 0:
-                        logits[i, pos, tok] = float('-inf')
+        for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
+            if tok >= 0:
+                logits[:, :, tok].masked_fill_(is_masked, float('-inf'))
 
         return logits
 
@@ -298,45 +278,28 @@ class ConstrainedSampler:
         Returns:
             Modified logits with invalid ring tokens masked out.
         """
-        batch_size, seq_len, vocab_size = logits.shape
+        all_ring_ids = sorted(self.ring_digit_ids | self.ring_percent_ids)
+        if not all_ring_ids:
+            return logits
 
-        # Combine all ring token IDs
-        all_ring_ids = self.ring_digit_ids | self.ring_percent_ids
+        ring_ids = torch.tensor(all_ring_ids, device=current_ids.device, dtype=torch.long)
+        ring_mask = current_ids.unsqueeze(-1) == ring_ids
+        ring_counts = ring_mask.sum(dim=1)
 
-        for i in range(batch_size):
-            seq = current_ids[i]
+        open_rings = ring_counts == 1
+        closed_rings = ring_counts >= 2
 
-            # Count occurrences of each ring token in unmasked positions
-            ring_counts = {}
-            for j in range(seq_len):
-                token_id = seq[j].item()
-                if token_id in all_ring_ids:
-                    ring_counts[token_id] = ring_counts.get(token_id, 0) + 1
+        num_masked = (current_ids == self.mask_id).sum(dim=1)
+        open_counts = open_rings.sum(dim=1)
+        forbid_open_new = num_masked <= open_counts
 
-            # Identify open rings (count == 1) and closed rings (count >= 2)
-            open_rings = {r for r, c in ring_counts.items() if c == 1}
-            closed_rings = {r for r, c in ring_counts.items() if c >= 2}
+        forbidden_ring = closed_rings | (forbid_open_new.unsqueeze(1) & ~open_rings)
 
-            # Count masked positions
-            num_masked = (seq == self.mask_id).sum().item()
-
-            # For each masked position, apply constraints
-            for pos in range(seq_len):
-                if seq[pos] != self.mask_id:
-                    continue
-
-                # Rule 1: Forbid ring digits that are already closed (count >= 2)
-                for ring_id in closed_rings:
-                    logits[i, pos, ring_id] = float('-inf')
-
-                # Rule 2: If too many open rings, forbid opening new ones
-                # Each open ring needs 1 more position to close
-                # Only allow opening new if: num_masked > len(open_rings)
-                if num_masked <= len(open_rings):
-                    # Forbid all ring digits except those that are open (can close them)
-                    for ring_id in all_ring_ids:
-                        if ring_id not in open_rings:
-                            logits[i, pos, ring_id] = float('-inf')
+        masked_positions = current_ids == self.mask_id
+        ring_logits = logits.index_select(2, ring_ids)
+        forbidden = masked_positions.unsqueeze(-1) & forbidden_ring.unsqueeze(1)
+        ring_logits = ring_logits.masked_fill(forbidden, float('-inf'))
+        logits.index_copy_(2, ring_ids, ring_logits)
 
         return logits
 
@@ -360,50 +323,47 @@ class ConstrainedSampler:
         Returns:
             Modified logits with invalid bond placements masked out.
         """
-        batch_size, seq_len, vocab_size = logits.shape
+        if not self.bond_ids:
+            return logits
 
-        for i in range(batch_size):
-            seq = current_ids[i]
+        is_masked = current_ids == self.mask_id
+        if not is_masked.any():
+            return logits
 
-            # For each masked position, find previous unmasked token
-            for pos in range(seq_len):
-                if seq[pos] != self.mask_id:
-                    continue
+        batch_size, seq_len = current_ids.shape
+        indices = torch.arange(seq_len, device=current_ids.device).unsqueeze(0).expand(batch_size, -1)
+        valid_idx = torch.where(is_masked, torch.full_like(indices, -1), indices)
+        prev_idx = torch.cummax(valid_idx, dim=1).values
 
-                # Find previous unmasked token
-                prev_token_id = None
-                for j in range(pos - 1, -1, -1):
-                    if seq[j] != self.mask_id:
-                        prev_token_id = seq[j].item()
-                        break
+        prev_idx_clamped = prev_idx.clamp(min=0)
+        prev_ids = current_ids.gather(1, prev_idx_clamped)
+        prev_ids = torch.where(prev_idx >= 0, prev_ids, torch.full_like(prev_ids, -1))
 
-                # Forbid bonds if:
-                # 1. At start (no previous token)
-                if prev_token_id is None:
-                    for bond_id in self.bond_ids:
-                        logits[i, pos, bond_id] = float('-inf')
+        invalid_prev = prev_idx < 0
+        if self.bos_id >= 0:
+            invalid_prev = invalid_prev | (prev_ids == self.bos_id)
+        if self.eos_id >= 0:
+            invalid_prev = invalid_prev | (prev_ids == self.eos_id)
+        if self.pad_id >= 0:
+            invalid_prev = invalid_prev | (prev_ids == self.pad_id)
+        if self.open_paren_id >= 0:
+            invalid_prev = invalid_prev | (prev_ids == self.open_paren_id)
+        if self.close_paren_id >= 0:
+            invalid_prev = invalid_prev | (prev_ids == self.close_paren_id)
 
-                # 2. Previous is BOS/EOS/PAD (treat as start)
-                elif prev_token_id in [self.bos_id, self.eos_id, self.pad_id]:
-                    for bond_id in self.bond_ids:
-                        logits[i, pos, bond_id] = float('-inf')
+        bond_ids = sorted(self.bond_ids)
+        bond_ids_tensor = torch.tensor(bond_ids, device=current_ids.device, dtype=current_ids.dtype)
+        prev_is_bond = (prev_ids.unsqueeze(-1) == bond_ids_tensor).any(dim=-1)
+        invalid_prev = invalid_prev | prev_is_bond
 
-                # 3. Previous is open parenthesis
-                elif prev_token_id == self.open_paren_id:
-                    for bond_id in self.bond_ids:
-                        logits[i, pos, bond_id] = float('-inf')
-                    # Also forbid close paren immediately after open paren (prevents empty parens)
-                    logits[i, pos, self.close_paren_id] = float('-inf')
+        invalid_bond = is_masked & invalid_prev
+        bond_logits = logits.index_select(2, bond_ids_tensor)
+        bond_logits = bond_logits.masked_fill(invalid_bond.unsqueeze(-1), float('-inf'))
+        logits.index_copy_(2, bond_ids_tensor, bond_logits)
 
-                # 4. Previous is close parenthesis (conservative)
-                elif prev_token_id == self.close_paren_id:
-                    for bond_id in self.bond_ids:
-                        logits[i, pos, bond_id] = float('-inf')
-
-                # 5. Previous is a bond (no consecutive bonds)
-                elif prev_token_id in self.bond_ids:
-                    for bond_id in self.bond_ids:
-                        logits[i, pos, bond_id] = float('-inf')
+        if self.open_paren_id >= 0 and self.close_paren_id >= 0:
+            invalid_close = is_masked & (prev_ids == self.open_paren_id)
+            logits[:, :, self.close_paren_id].masked_fill_(invalid_close, float('-inf'))
 
         return logits
 
@@ -423,17 +383,18 @@ class ConstrainedSampler:
         Returns:
             Modified logits.
         """
-        batch_size, seq_len, vocab_size = logits.shape
+        if self.star_id < 0:
+            return logits
 
         # Count current stars (excluding MASK positions)
         non_mask = current_ids != self.mask_id
         current_stars = ((current_ids == self.star_id) & non_mask).sum(dim=1)
 
         # For sequences with >= max_stars, set star logit to -inf at MASK positions
-        for i in range(batch_size):
-            if current_stars[i] >= max_stars:
-                mask_positions = current_ids[i] == self.mask_id
-                logits[i, mask_positions, self.star_id] = float('-inf')
+        blocked = current_stars >= max_stars
+        if blocked.any():
+            mask_positions = current_ids == self.mask_id
+            logits[:, :, self.star_id].masked_fill_(mask_positions & blocked.unsqueeze(1), float('-inf'))
 
         return logits
 
@@ -624,6 +585,146 @@ class ConstrainedSampler:
 
         return fixed_ids
 
+    def _sample_from_ids(
+        self,
+        ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        show_progress: bool = True
+    ) -> Tuple[torch.Tensor, List[str]]:
+        """Run reverse diffusion sampling starting from provided token IDs.
+
+        Args:
+            ids: Initial token IDs of shape [batch, seq_len].
+            attention_mask: Attention mask of shape [batch, seq_len].
+            fixed_mask: Boolean mask marking fixed (non-sampled) positions.
+            show_progress: Whether to show progress bar.
+
+        Returns:
+            Tuple of (token_ids, smiles_strings).
+        """
+        self.diffusion_model.eval()
+        backbone = self.diffusion_model.backbone
+        batch_size = ids.shape[0]
+
+        final_logits = None
+        steps = range(self.num_steps, 0, -1)
+        if show_progress:
+            steps = tqdm(steps, desc="Sampling")
+
+        for t in steps:
+            timesteps = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
+
+            with torch.no_grad():
+                logits = backbone(ids, timesteps, attention_mask)
+
+            logits = logits / self.temperature
+            logits = self._apply_star_constraint(logits, ids, max_stars=2)
+            logits = self._apply_position_aware_paren_constraints(logits, ids)
+            logits = self._apply_ring_constraints(logits, ids)
+            logits = self._apply_bond_placement_constraints(logits, ids)
+
+            probs = F.softmax(logits, dim=-1)
+            is_masked = (ids == self.mask_id) & (~fixed_mask)
+            unmask_prob = 1.0 / t
+
+            for i in range(batch_size):
+                masked_pos = torch.where(is_masked[i])[0]
+                if len(masked_pos) == 0:
+                    continue
+
+                num_unmask = max(1, int(len(masked_pos) * unmask_prob))
+                unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
+                unmask_positions = masked_pos[unmask_indices]
+
+                # Sample tokens for these positions SEQUENTIALLY with constraint updates
+                for pos in unmask_positions:
+                    sampled = torch.multinomial(probs[i, pos], 1)
+                    ids[i, pos] = sampled
+
+                    sampled_token = sampled.item()
+
+                    if sampled_token == self.star_id:
+                        non_mask = ids[i] != self.mask_id
+                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
+
+                        if current_stars >= 2:
+                            remaining_mask = (ids[i] == self.mask_id) & (~fixed_mask[i])
+                            logits[i, remaining_mask, self.star_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    elif sampled_token in self.bond_ids:
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            for bond_id in self.bond_ids:
+                                logits[i, next_pos, bond_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+                    elif sampled_token == self.open_paren_id:
+                        next_pos = pos + 1
+                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                            logits[i, next_pos, self.close_paren_id] = float('-inf')
+                            probs[i] = F.softmax(logits[i], dim=-1)
+
+            if t == 1:
+                final_logits = logits
+
+        ids = self._fix_star_count(ids, final_logits, target_stars=2)
+        ids = self._fix_paren_balance(ids, final_logits)
+        ids = self._fix_ring_closures(ids, final_logits)
+        smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
+
+        return ids, smiles_list
+
+    def sample_with_lengths(
+        self,
+        lengths: List[int],
+        max_length: Optional[int] = None,
+        show_progress: bool = True
+    ) -> Tuple[torch.Tensor, List[str]]:
+        """Sample polymers with per-sample lengths (includes BOS/EOS).
+
+        Args:
+            lengths: Sequence lengths INCLUDING BOS/EOS for each sample.
+            max_length: Optional hard cap for sequence length.
+            show_progress: Whether to show progress bar.
+
+        Returns:
+            Tuple of (token_ids, smiles_strings).
+        """
+        if not lengths:
+            return torch.empty((0, 0), dtype=torch.long, device=self.device), []
+
+        lengths = [max(2, int(l)) for l in lengths]
+        seq_length = max(lengths)
+        if max_length is not None and seq_length > max_length:
+            raise ValueError(f"Max length {max_length} is smaller than required {seq_length}")
+
+        batch_size = len(lengths)
+        ids = torch.full(
+            (batch_size, seq_length),
+            self.mask_id,
+            dtype=torch.long,
+            device=self.device
+        )
+        attention_mask = torch.zeros_like(ids)
+        fixed_mask = torch.zeros_like(ids, dtype=torch.bool)
+
+        ids[:, 0] = self.bos_id
+        fixed_mask[:, 0] = True
+
+        for i, length in enumerate(lengths):
+            eos_pos = length - 1
+            ids[i, eos_pos] = self.eos_id
+            fixed_mask[i, eos_pos] = True
+            attention_mask[i, :length] = 1
+
+            if length < seq_length:
+                ids[i, length:] = self.pad_id
+                fixed_mask[i, length:] = True
+
+        return self._sample_from_ids(ids, attention_mask, fixed_mask, show_progress)
+
     def sample(
         self,
         batch_size: int,
@@ -641,7 +742,6 @@ class ConstrainedSampler:
             Tuple of (token_ids, smiles_strings).
         """
         self.diffusion_model.eval()
-        backbone = self.diffusion_model.backbone
 
         # Initialize with fully masked sequence (except BOS/EOS)
         ids = torch.full(
@@ -656,116 +756,17 @@ class ConstrainedSampler:
         # Create attention mask
         attention_mask = torch.ones_like(ids)
 
-        # Store logits for final fixing
-        final_logits = None
+        fixed_mask = ids != self.mask_id
 
-        # Reverse diffusion
-        steps = range(self.num_steps, 0, -1)
-        if show_progress:
-            steps = tqdm(steps, desc="Sampling")
-
-        for t in steps:
-            timesteps = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
-
-            with torch.no_grad():
-                logits = backbone(ids, timesteps, attention_mask)
-
-            # Apply temperature
-            logits = logits / self.temperature
-
-            # Apply star constraint
-            logits = self._apply_star_constraint(logits, ids, max_stars=2)
-
-            # Apply position-aware parenthesis constraints
-            logits = self._apply_position_aware_paren_constraints(logits, ids)
-
-            # Apply ring closure constraints
-            logits = self._apply_ring_constraints(logits, ids)
-
-            # Apply bond placement constraints
-            logits = self._apply_bond_placement_constraints(logits, ids)
-
-            # Sample from masked positions
-            probs = F.softmax(logits, dim=-1)
-
-            # Only update masked positions
-            is_masked = ids == self.mask_id
-
-            # Determine which masked tokens to unmask at this step
-            # Unmask proportionally based on schedule
-            unmask_prob = 1.0 / t  # Simple linear unmasking
-
-            for i in range(batch_size):
-                masked_pos = torch.where(is_masked[i])[0]
-                if len(masked_pos) == 0:
-                    continue
-
-                # Randomly select positions to unmask
-                num_unmask = max(1, int(len(masked_pos) * unmask_prob))
-                unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
-                unmask_positions = masked_pos[unmask_indices]
-
-                # Sample tokens for these positions SEQUENTIALLY with constraint updates
-                # This prevents race conditions where multiple positions sample conflicting tokens
-                for pos in unmask_positions:
-                    sampled = torch.multinomial(probs[i, pos], 1)
-                    ids[i, pos] = sampled
-
-                    # Update constraints dynamically based on what was just sampled
-                    sampled_token = sampled.item()
-
-                    # If we sampled a star, update star constraint for remaining positions
-                    if sampled_token == self.star_id:
-                        # Count current stars (excluding remaining MASK positions)
-                        non_mask = ids[i] != self.mask_id
-                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
-
-                        # If we've reached the limit, forbid stars at remaining masked positions
-                        if current_stars >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            logits[i, remaining_mask, self.star_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-                    # If we sampled a bond, forbid bonds at the next position
-                    elif sampled_token in self.bond_ids:
-                        # Find next position in the sequence (not necessarily next in unmask order)
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            for bond_id in self.bond_ids:
-                                logits[i, next_pos, bond_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-                    # If we sampled an open paren, forbid close paren at the next position
-                    elif sampled_token == self.open_paren_id:
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            logits[i, next_pos, self.close_paren_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-            # Store logits for final step
-            if t == 1:
-                final_logits = logits
-
-        # Fix star count in final sequences
-        ids = self._fix_star_count(ids, final_logits, target_stars=2)
-
-        # Fix parenthesis balance (safety net)
-        ids = self._fix_paren_balance(ids, final_logits)
-
-        # Fix ring closures (safety net)
-        ids = self._fix_ring_closures(ids, final_logits)
-
-        # Decode to SMILES
-        smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
-
-        return ids, smiles_list
+        return self._sample_from_ids(ids, attention_mask, fixed_mask, show_progress)
 
     def sample_batch(
         self,
         num_samples: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> Tuple[List[torch.Tensor], List[str]]:
         """Sample multiple batches of polymers.
 
@@ -774,6 +775,7 @@ class ConstrainedSampler:
             seq_length: Sequence length.
             batch_size: Batch size for sampling.
             show_progress: Whether to show progress.
+            lengths: Optional list of per-sample lengths (includes BOS/EOS).
 
         Returns:
             Tuple of (all_ids, all_smiles).
@@ -781,19 +783,32 @@ class ConstrainedSampler:
         all_ids = []
         all_smiles = []
 
+        if lengths is not None and len(lengths) != num_samples:
+            raise ValueError("lengths must match num_samples")
+
         num_batches = (num_samples + batch_size - 1) // batch_size
+        sample_idx = 0
 
         for batch_idx in tqdm(range(num_batches), desc="Batch sampling", disable=not show_progress):
-            current_batch_size = min(batch_size, num_samples - len(all_smiles))
+            current_batch_size = min(batch_size, num_samples - sample_idx)
 
-            ids, smiles = self.sample(
-                current_batch_size,
-                seq_length,
-                show_progress=False
-            )
+            if lengths is None:
+                ids, smiles = self.sample(
+                    current_batch_size,
+                    seq_length,
+                    show_progress=False
+                )
+            else:
+                batch_lengths = lengths[sample_idx:sample_idx + current_batch_size]
+                ids, smiles = self.sample_with_lengths(
+                    batch_lengths,
+                    max_length=seq_length,
+                    show_progress=False
+                )
 
             all_ids.append(ids)
             all_smiles.extend(smiles)
+            sample_idx += current_batch_size
 
         return all_ids, all_smiles
 
@@ -866,9 +881,6 @@ class ConstrainedSampler:
         Returns:
             Tuple of (token_ids, smiles_strings).
         """
-        self.diffusion_model.eval()
-        backbone = self.diffusion_model.backbone
-
         # Initialize
         ids = torch.full(
             (batch_size, seq_length),
@@ -895,81 +907,5 @@ class ConstrainedSampler:
             fixed_mask[:, -1-suffix_len:-1] = True
 
         attention_mask = torch.ones_like(ids)
-        final_logits = None
 
-        steps = range(self.num_steps, 0, -1)
-        if show_progress:
-            steps = tqdm(steps, desc="Sampling")
-
-        for t in steps:
-            timesteps = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
-
-            with torch.no_grad():
-                logits = backbone(ids, timesteps, attention_mask)
-
-            logits = logits / self.temperature
-            logits = self._apply_star_constraint(logits, ids, max_stars=2)
-            logits = self._apply_position_aware_paren_constraints(logits, ids)
-            logits = self._apply_ring_constraints(logits, ids)
-            logits = self._apply_bond_placement_constraints(logits, ids)
-
-            probs = F.softmax(logits, dim=-1)
-            is_masked = (ids == self.mask_id) & (~fixed_mask)
-
-            unmask_prob = 1.0 / t
-
-            for i in range(batch_size):
-                masked_pos = torch.where(is_masked[i])[0]
-                if len(masked_pos) == 0:
-                    continue
-
-                num_unmask = max(1, int(len(masked_pos) * unmask_prob))
-                unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
-                unmask_positions = masked_pos[unmask_indices]
-
-                # Sample tokens for these positions SEQUENTIALLY with constraint updates
-                # This prevents race conditions where multiple positions sample conflicting tokens
-                for pos in unmask_positions:
-                    sampled = torch.multinomial(probs[i, pos], 1)
-                    ids[i, pos] = sampled
-
-                    # Update constraints dynamically based on what was just sampled
-                    sampled_token = sampled.item()
-
-                    # If we sampled a star, update star constraint for remaining positions
-                    if sampled_token == self.star_id:
-                        # Count current stars (excluding remaining MASK positions)
-                        non_mask = ids[i] != self.mask_id
-                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
-
-                        # If we've reached the limit, forbid stars at remaining masked positions
-                        if current_stars >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            logits[i, remaining_mask, self.star_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-                    # If we sampled a bond, forbid bonds at the next position
-                    elif sampled_token in self.bond_ids:
-                        # Find next position in the sequence (not necessarily next in unmask order)
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            for bond_id in self.bond_ids:
-                                logits[i, next_pos, bond_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-                    # If we sampled an open paren, forbid close paren at the next position
-                    elif sampled_token == self.open_paren_id:
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            logits[i, next_pos, self.close_paren_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
-
-            if t == 1:
-                final_logits = logits
-
-        ids = self._fix_star_count(ids, final_logits, target_stars=2)
-        ids = self._fix_paren_balance(ids, final_logits)
-        ids = self._fix_ring_closures(ids, final_logits)
-        smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
-
-        return ids, smiles_list
+        return self._sample_from_ids(ids, attention_mask, fixed_mask, show_progress)

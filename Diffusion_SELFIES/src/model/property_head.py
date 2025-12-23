@@ -220,4 +220,18 @@ class PropertyPredictor(nn.Module):
             path: Path to checkpoint.
         """
         checkpoint = torch.load(path, map_location='cpu')
-        self.property_head.load_state_dict(checkpoint['property_head_state_dict'])
+        if 'property_head_state_dict' in checkpoint:
+            state_dict = checkpoint['property_head_state_dict']
+        elif 'model_state_dict' in checkpoint:
+            model_state = checkpoint['model_state_dict']
+            if any(k.startswith('_orig_mod.') for k in model_state.keys()):
+                model_state = {k.replace('_orig_mod.', ''): v for k, v in model_state.items()}
+            prefix = 'property_head.'
+            state_dict = {
+                k[len(prefix):]: v for k, v in model_state.items() if k.startswith(prefix)
+            }
+            if not state_dict:
+                raise KeyError('No property_head weights found in model_state_dict')
+        else:
+            raise KeyError('Checkpoint missing property_head_state_dict or model_state_dict')
+        self.property_head.load_state_dict(state_dict)

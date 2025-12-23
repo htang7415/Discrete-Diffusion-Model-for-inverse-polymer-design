@@ -66,8 +66,8 @@ def main(args):
     test_df = property_data['test']
 
     # Compute normalization parameters from training data
-    mean = train_df[args.property].mean()
-    std = train_df[args.property].std()
+    mean = float(train_df[args.property].mean())
+    std = float(train_df[args.property].std())
     print(f"Normalization: mean={mean:.4f}, std={std:.4f}")
 
     # Get optimization settings
