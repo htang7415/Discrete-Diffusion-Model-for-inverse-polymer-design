@@ -79,7 +79,7 @@ training_property:
   num_epochs: 300
   patience: 30
   freeze_backbone: true
-  finetune_last_layers: 4
+  finetune_last_layers: 3
   default_timestep: 1
 
 # Optimization settings for A100 GPU
@@ -96,12 +96,12 @@ optimization:
 
 # Property head architecture
 property_head:
-  hidden_sizes: [256, 512, 512, 128]
+  hidden_sizes: [128, 256, 128]
   dropout: 0.1
 
 # Sampling
 sampling:
-  num_samples: 5000
+  num_samples: 10000
   batch_size: 256
   temperature: 1.0
 

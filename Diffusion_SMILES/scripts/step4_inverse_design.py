@@ -86,7 +86,7 @@ def main(args):
         eos_token_id=tokenizer.eos_token_id
     )
 
-    backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device)
+    backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device, weights_only=False)
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = backbone_ckpt['model_state_dict']
     if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
@@ -108,7 +108,8 @@ def main(args):
     print("\n4. Loading property predictor...")
     property_ckpt = torch.load(
         results_dir / 'checkpoints' / f'{args.property}_best.pt',
-        map_location=device
+        map_location=device,
+        weights_only=False
     )
 
     head_config = config['property_head']

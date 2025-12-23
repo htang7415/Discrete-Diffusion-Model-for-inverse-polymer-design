@@ -83,7 +83,7 @@ def main(args):
     checkpoint_path = args.checkpoint or (results_dir / 'checkpoints' / 'graph_backbone_best.pt')
     print(f"   Checkpoint: {checkpoint_path}")
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     backbone_config = config['backbone']
     diffusion_config = config['diffusion']

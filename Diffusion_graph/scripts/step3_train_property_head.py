@@ -136,7 +136,7 @@ def main(args):
     # Load backbone
     print("\n3. Loading graph backbone...")
     checkpoint_path = args.backbone_checkpoint or (results_dir / 'checkpoints' / 'graph_backbone_best.pt')
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Create backbone
     backbone = create_graph_backbone(config, graph_config)

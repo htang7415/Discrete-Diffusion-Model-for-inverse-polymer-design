@@ -73,7 +73,8 @@ def main(args):
 
     backbone_ckpt = torch.load(
         results_dir / 'checkpoints' / 'graph_backbone_best.pt',
-        map_location=device
+        map_location=device,
+        weights_only=False
     )
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = backbone_ckpt['model_state_dict']
@@ -95,7 +96,8 @@ def main(args):
     print("\n4. Loading property predictor...")
     property_ckpt = torch.load(
         results_dir / 'checkpoints' / f'{args.property}_best.pt',
-        map_location=device
+        map_location=device,
+        weights_only=False
     )
 
     head_config = config['property_head']

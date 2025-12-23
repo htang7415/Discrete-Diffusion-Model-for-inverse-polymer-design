@@ -63,7 +63,7 @@ def main(args):
     # Load model
     print("\n3. Loading model...")
     checkpoint_path = args.checkpoint or (results_dir / 'checkpoints' / 'backbone_best.pt')
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     backbone_config = config['backbone']
     backbone = DiffusionBackbone(

@@ -94,7 +94,7 @@ def main(args):
         eos_token_id=tokenizer.eos_token_id
     )
 
-    backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device)
+    backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device, weights_only=False)
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = backbone_ckpt['model_state_dict']
     if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
@@ -138,7 +138,8 @@ def main(args):
         # Load normalization parameters
         property_ckpt = torch.load(
             results_dir / 'checkpoints' / f'{args.property}_best.pt',
-            map_location=device
+            map_location=device,
+            weights_only=False
         )
         norm_params = property_ckpt.get('normalization_params', {'mean': 0.0, 'std': 1.0})
 

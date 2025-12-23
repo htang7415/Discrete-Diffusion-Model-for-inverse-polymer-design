@@ -291,8 +291,9 @@ class PropertyTrainer:
                 self._maybe_mark_cudagraph_step_begin()
                 with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
                     preds = self.model.predict(input_ids, attention_mask)
+                preds = preds.float()
                 all_preds.extend(preds.cpu().numpy().tolist())
-                all_labels.extend(labels.cpu().numpy().tolist())
+                all_labels.extend(labels.float().cpu().numpy().tolist())
 
         # Denormalize if needed
         mean = self.normalization_params['mean']
@@ -348,7 +349,7 @@ class PropertyTrainer:
         """Load best checkpoint."""
         checkpoint_path = self.checkpoint_dir / f'{self.property_name}_best.pt'
         if checkpoint_path.exists():
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             print(f"Loaded best checkpoint with val_loss: {checkpoint['val_loss']:.4f}")
 

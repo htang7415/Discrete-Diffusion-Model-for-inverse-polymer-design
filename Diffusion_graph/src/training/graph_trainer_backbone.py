@@ -425,7 +425,7 @@ class GraphBackboneTrainer:
         Args:
             checkpoint_path: Path to checkpoint.
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
         # Handle compiled model
         if hasattr(self.model, '_orig_mod'):

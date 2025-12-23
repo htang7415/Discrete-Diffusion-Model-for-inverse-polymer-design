@@ -129,7 +129,7 @@ def main(args):
     # Resume from checkpoint if specified
     if args.resume:
         print(f"\nResuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         # Handle torch.compile() state dict (keys have _orig_mod. prefix)
         state_dict = checkpoint['model_state_dict']
         if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
