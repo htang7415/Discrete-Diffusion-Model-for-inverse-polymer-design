@@ -170,6 +170,61 @@ def _tokenize_batch_worker(smiles_batch, grammar, placeholder_smiles):
     return batch_tokens
 
 
+def _get_lengths_worker(smiles_batch, grammar, placeholder_smiles):
+    """Worker function to get token lengths for a batch of SMILES in parallel.
+
+    Args:
+        smiles_batch: List of p-SMILES strings to tokenize
+        grammar: GroupGrammar object for encoding
+        placeholder_smiles: Placeholder string to replace '*'
+
+    Returns:
+        List of token lengths (one per input SMILES)
+    """
+    import re
+    from rdkit import Chem, RDLogger
+
+    # Silence RDKit warnings in worker
+    RDLogger.DisableLog('rdApp.*')
+
+    lengths = []
+    for smiles in smiles_batch:
+        smiles_ph = smiles.replace("*", placeholder_smiles)
+        try:
+            mol = Chem.MolFromSmiles(smiles_ph)
+            if mol is None:
+                lengths.append(0)
+                continue
+
+            with _suppress_stdout_stderr():
+                gsf_string = grammar.full_encoder(mol)
+
+            # Parse and count tokens
+            token_count = 0
+            i = 0
+            while i < len(gsf_string):
+                if gsf_string[i] == '[':
+                    match = re.match(r'\[[^\[\]]+\]', gsf_string[i:])
+                    if match:
+                        token_count += 1
+                        i += len(match.group())
+                        continue
+                if gsf_string[i] == ':':
+                    match = re.match(r':[0-9]+[A-Za-z0-9]+', gsf_string[i:])
+                    if match:
+                        token_count += 1
+                        i += len(match.group())
+                        continue
+                token_count += 1
+                i += 1
+
+            lengths.append(token_count)
+        except Exception:
+            lengths.append(0)
+
+    return lengths
+
+
 def _verify_roundtrip_worker(smiles_batch, grammar, placeholder_smiles, max_failures=5):
     """Worker function to verify roundtrip for a batch of SMILES in parallel.
 
@@ -513,6 +568,15 @@ class GroupSELFIESTokenizer:
 
         raw_groups = _unique_in_order(raw_groups)
 
+        # Filter out groups containing the placeholder [I+3]
+        # These cause decode failures because the encoder produces separate [IH0+3] tokens
+        # that the decoder can't connect to group attachment points
+        original_count = len(raw_groups)
+        raw_groups = [g for g in raw_groups if self.PLACEHOLDER_SMILES not in g]
+        filtered_count = original_count - len(raw_groups)
+        if verbose and filtered_count > 0:
+            print(f"Filtered out {filtered_count} groups containing placeholder {self.PLACEHOLDER_SMILES}")
+
         # Limit number of groups
         if len(raw_groups) > max_groups:
             raw_groups = raw_groups[:max_groups]
@@ -775,6 +839,66 @@ class GroupSELFIESTokenizer:
                     print(f"  {error_type}: {smiles}")
 
         return (total_valid, total_count, all_failures)
+
+    def parallel_get_lengths(
+        self,
+        smiles_list: List[str],
+        num_workers: int,
+        chunk_size: int = 1000,
+        verbose: bool = True
+    ) -> List[int]:
+        """Get token lengths for a list of SMILES in parallel.
+
+        Args:
+            smiles_list: List of p-SMILES strings
+            num_workers: Number of parallel workers (1 = sequential)
+            chunk_size: Number of SMILES per chunk
+            verbose: Show progress bars
+
+        Returns:
+            List of token lengths (one per input SMILES)
+        """
+        if self.grammar is None:
+            raise ValueError("Grammar not initialized. Call build_vocab_and_grammar first.")
+
+        # Split into chunks
+        chunks = [
+            smiles_list[i:i + chunk_size]
+            for i in range(0, len(smiles_list), chunk_size)
+        ]
+
+        if verbose:
+            print(f"Computing lengths for {len(smiles_list)} molecules using {num_workers} workers...")
+
+        # Create worker function with grammar and placeholder bound
+        worker_func = partial(_get_lengths_worker, grammar=self.grammar, placeholder_smiles=self.PLACEHOLDER_SMILES)
+
+        # Process chunks
+        all_lengths = []
+
+        if num_workers <= 1:
+            # Sequential fallback
+            iterator = tqdm(chunks, desc="Computing lengths") if verbose else chunks
+            for chunk in iterator:
+                lengths = worker_func(chunk)
+                all_lengths.extend(lengths)
+        else:
+            # Parallel processing
+            with Pool(processes=num_workers) as pool:
+                if verbose:
+                    results = list(tqdm(
+                        pool.imap(worker_func, chunks),
+                        total=len(chunks),
+                        desc="Computing lengths"
+                    ))
+                else:
+                    results = pool.map(worker_func, chunks)
+
+                # Flatten results
+                for lengths in results:
+                    all_lengths.extend(lengths)
+
+        return all_lengths
 
     def _find_placeholder_token(self):
         """Find the token(s) representing the placeholder atom."""

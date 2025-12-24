@@ -716,6 +716,47 @@ class GraphSampler:
 
         return smiles_list
 
+    def sample_batch(
+        self,
+        num_samples: int,
+        batch_size: int = 256,
+        show_progress: bool = True,
+        temperature: float = 1.0,
+        num_atoms: Optional[int] = None
+    ) -> List[Optional[str]]:
+        """Sample multiple batches of graphs.
+
+        Args:
+            num_samples: Total number of samples to generate.
+            batch_size: Batch size for sampling.
+            show_progress: Whether to show progress.
+            temperature: Sampling temperature.
+            num_atoms: Fixed number of atoms (if None, sample per-graph).
+
+        Returns:
+            List of p-SMILES strings (None for failed conversions).
+        """
+        all_smiles: List[Optional[str]] = []
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        batch_iter = range(num_batches)
+        if show_progress:
+            batch_iter = tqdm(batch_iter, desc="Batch sampling")
+
+        for _ in batch_iter:
+            current_batch_size = min(batch_size, num_samples - len(all_smiles))
+            if current_batch_size <= 0:
+                break
+            smiles = self.sample(
+                current_batch_size,
+                temperature=temperature,
+                show_progress=False,
+                num_atoms=num_atoms
+            )
+            all_smiles.extend(smiles)
+
+        return all_smiles
+
     def sample_with_graphs(
         self,
         batch_size: int,

@@ -117,19 +117,30 @@ def main(args):
     norm_params = {'mean': 0.0, 'std': 1.0}
     if args.property:
         print(f"\n5. Loading property predictor for {args.property}...")
-        head_config = config['property_head']
+        step3_config_path = results_dir / f'step3_{args.property}' / 'config_used.yaml'
+        trained_config = config
+        if step3_config_path.exists():
+            trained_config = load_config(step3_config_path)
+            if trained_config.get('property_head') != config.get('property_head'):
+                print(f"Using property head settings from {step3_config_path} to match checkpoint.")
+
+        head_config = trained_config.get('property_head', config['property_head'])
         property_head = PropertyHead(
             input_size=backbone_config['hidden_size'],
             hidden_sizes=head_config['hidden_sizes'],
             dropout=head_config['dropout']
         )
 
+        default_timestep = trained_config.get('training_property', {}).get(
+            'default_timestep',
+            config['training_property'].get('default_timestep', 1)
+        )
         property_predictor = PropertyPredictor(
             backbone=diffusion_model.backbone,
             property_head=property_head,
             freeze_backbone=True,
             pooling='mean',
-            default_timestep=config['training_property'].get('default_timestep', 1)
+            default_timestep=default_timestep
         )
         property_predictor.load_property_head(results_dir / 'checkpoints' / f'{args.property}_best.pt')
         property_predictor = property_predictor.to(device)

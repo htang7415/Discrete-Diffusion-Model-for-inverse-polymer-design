@@ -86,7 +86,7 @@ training_property:
   num_epochs: 500
   patience: 30
   freeze_backbone: true
-  finetune_last_layers: 3
+  finetune_last_layers: 0
   default_timestep: 1
 
 # Optimization settings for A100 GPU

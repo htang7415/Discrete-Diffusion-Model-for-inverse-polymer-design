@@ -175,10 +175,20 @@ def main(args):
     ])
     stats_df.to_csv(metrics_dir / 'unlabeled_data_stats.csv', index=False)
 
-    # Compute token lengths
+    # Compute token lengths (PARALLELIZED)
     print("\n5. Computing token length distributions...")
-    train_lengths = [len(tokenizer.tokenize(s)) for s in train_df['p_smiles']]
-    val_lengths = [len(tokenizer.tokenize(s)) for s in val_df['p_smiles']]
+    train_lengths = tokenizer.parallel_get_lengths(
+        train_df['p_smiles'].tolist(),
+        num_workers=num_workers,
+        chunk_size=chunk_size,
+        verbose=True
+    )
+    val_lengths = tokenizer.parallel_get_lengths(
+        val_df['p_smiles'].tolist(),
+        num_workers=num_workers,
+        chunk_size=chunk_size,
+        verbose=True
+    )
 
     # Length statistics
     length_stats = pd.DataFrame({
