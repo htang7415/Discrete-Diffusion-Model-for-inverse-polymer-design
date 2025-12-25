@@ -24,6 +24,7 @@ from src.model.diffusion import DiscreteMaskingDiffusion
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.training.trainer_property import PropertyTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 def main(args):
@@ -228,15 +229,51 @@ def main(args):
         save_path=figures_dir / f'{args.property}_loss_curve.png'
     )
 
-    # Parity plot
+    # Get predictions for all splits
+    train_preds, train_labels = trainer.get_predictions(train_loader)
+    val_preds, val_labels = trainer.get_predictions(val_loader)
     test_metrics = history['test_metrics']
+
+    # Compute train metrics
+    train_mae = round(mean_absolute_error(train_labels, train_preds), 4)
+    train_rmse = round(np.sqrt(mean_squared_error(train_labels, train_preds)), 4)
+    train_r2 = round(r2_score(train_labels, train_preds), 4)
+
+    # Compute val metrics
+    val_mae = round(mean_absolute_error(val_labels, val_preds), 4)
+    val_rmse = round(np.sqrt(mean_squared_error(val_labels, val_preds)), 4)
+    val_r2 = round(r2_score(val_labels, val_preds), 4)
+
+    # Parity plot for train
+    plotter.parity_plot(
+        y_true=train_labels,
+        y_pred=train_preds,
+        xlabel=f'True {args.property}',
+        ylabel=f'Predicted {args.property}',
+        title=f'{args.property} Parity Plot (Train)',
+        save_path=figures_dir / f'{args.property}_parity_plot_train.png',
+        metrics={'MAE': train_mae, 'RMSE': train_rmse, 'R²': train_r2}
+    )
+
+    # Parity plot for validation
+    plotter.parity_plot(
+        y_true=val_labels,
+        y_pred=val_preds,
+        xlabel=f'True {args.property}',
+        ylabel=f'Predicted {args.property}',
+        title=f'{args.property} Parity Plot (Validation)',
+        save_path=figures_dir / f'{args.property}_parity_plot_val.png',
+        metrics={'MAE': val_mae, 'RMSE': val_rmse, 'R²': val_r2}
+    )
+
+    # Parity plot for test
     plotter.parity_plot(
         y_true=np.array(test_metrics['labels']),
         y_pred=np.array(test_metrics['predictions']),
         xlabel=f'True {args.property}',
         ylabel=f'Predicted {args.property}',
-        title=f'{args.property} Parity Plot',
-        save_path=figures_dir / f'{args.property}_parity_plot.png',
+        title=f'{args.property} Parity Plot (Test)',
+        save_path=figures_dir / f'{args.property}_parity_plot_test.png',
         metrics={
             'MAE': test_metrics['MAE'],
             'RMSE': test_metrics['RMSE'],

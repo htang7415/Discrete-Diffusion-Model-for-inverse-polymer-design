@@ -201,50 +201,6 @@ def main(args):
         save_path=figures_dir / f'{args.property}_calibration.png'
     )
 
-    # Run detailed design for best target
-    print("\n7. Running detailed analysis for middle target...")
-    middle_target = target_values[len(target_values) // 2]
-    detailed_results = designer.design(
-        target_value=middle_target,
-        epsilon=args.epsilon,
-        num_candidates=args.num_candidates * 2,
-        seq_length=tokenizer.max_length,
-        batch_size=config['sampling']['batch_size'],
-        show_progress=True
-    )
-
-    # Histogram of predictions around target
-    if detailed_results['predictions']:
-        predictions = np.array(detailed_results['predictions'])
-        plotter.histogram(
-            data=[predictions],
-            labels=['Predictions'],
-            xlabel=f'Predicted {args.property}',
-            ylabel='Count',
-            title=f'Predictions near target={middle_target}',
-            save_path=figures_dir / f'{args.property}_pred_hist_target_{int(middle_target)}.png',
-            bins=50
-        )
-
-    # SA histogram: train vs hits
-    if detailed_results['hits_smiles']:
-        train_sa = [compute_sa_score(s) for s in list(training_smiles)[:3000]]
-        train_sa = [s for s in train_sa if s is not None]
-        hits_sa = [compute_sa_score(s) for s in detailed_results['hits_smiles']]
-        hits_sa = [s for s in hits_sa if s is not None]
-
-        if hits_sa:
-            plotter.histogram(
-                data=[train_sa, hits_sa],
-                labels=['Train', 'Hits'],
-                xlabel='SA Score',
-                ylabel='Count',
-                title=f'SA Score: Train vs Hits (target={int(middle_target)})',
-                save_path=figures_dir / f'{args.property}_sa_hist_train_vs_hits.png',
-                bins=50,
-                style='step'
-            )
-
     print("\n" + "=" * 50)
     print("Inverse design complete!")
     print(f"Results saved to: {metrics_dir / f'{args.property}_design.csv'}")
