@@ -192,7 +192,8 @@ class ClassGuidedDesigner:
         num_candidates: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> Dict:
         """Design polymers for a specific class.
 
@@ -202,6 +203,7 @@ class ClassGuidedDesigner:
             seq_length: Sequence length.
             batch_size: Batch size.
             show_progress: Whether to show progress.
+            lengths: Optional list of sequence lengths for each sample.
 
         Returns:
             Dictionary with results.
@@ -211,7 +213,8 @@ class ClassGuidedDesigner:
 
         # Generate candidates (sampler returns SELFIES)
         _, all_selfies = self.sampler.sample_batch(
-            num_candidates, seq_length, batch_size, show_progress
+            num_candidates, seq_length, batch_size, show_progress,
+            lengths=lengths
         )
 
         # Convert SELFIES to p-SMILES and filter valid
@@ -290,7 +293,8 @@ class ClassGuidedDesigner:
         num_candidates: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> Dict:
         """Joint design: class + property.
 
@@ -302,6 +306,7 @@ class ClassGuidedDesigner:
             seq_length: Sequence length.
             batch_size: Batch size.
             show_progress: Whether to show progress.
+            lengths: Optional list of sequence lengths for each sample.
 
         Returns:
             Dictionary with results.
@@ -314,7 +319,8 @@ class ClassGuidedDesigner:
 
         # Generate candidates (sampler returns SELFIES)
         _, all_selfies = self.sampler.sample_batch(
-            num_candidates, seq_length, batch_size, show_progress
+            num_candidates, seq_length, batch_size, show_progress,
+            lengths=lengths
         )
 
         # Convert SELFIES to p-SMILES and filter valid

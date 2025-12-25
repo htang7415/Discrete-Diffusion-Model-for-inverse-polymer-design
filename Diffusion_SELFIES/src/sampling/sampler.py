@@ -102,6 +102,27 @@ class ConstrainedSampler:
             logits[:, :, self.placeholder_id]
         )
 
+        # Urgency-based boosting: boost placeholder probability when running low on masked positions
+        batch_size = logits.shape[0]
+        for b in range(batch_size):
+            valid_mask = current_ids[b] != self.mask_id
+            num_placeholders = ((current_ids[b] == self.placeholder_id) & valid_mask).sum().item()
+            num_masked = (current_ids[b] == self.mask_id).sum().item()
+
+            needed = 2 - int(num_placeholders)
+
+            # If we still need placeholders and running low on masked positions, boost
+            # Urgency threshold: boost when num_masked <= 5 * needed
+            if needed > 0 and num_masked > 0 and num_masked <= 5 * needed:
+                mask_positions = (current_ids[b] == self.mask_id)
+                placeholder_probs = F.softmax(logits[b, :, self.placeholder_id], dim=0)
+                placeholder_probs = placeholder_probs * mask_positions.float()
+
+                if placeholder_probs.sum() > 0:
+                    k = min(needed, int(mask_positions.sum()))
+                    _, top_indices = torch.topk(placeholder_probs, k=k)
+                    logits[b, top_indices, self.placeholder_id] = 100.0  # Strong boost
+
         return logits
 
     def _fix_placeholder_count(
@@ -170,11 +191,33 @@ class ConstrainedSampler:
 
         return fixed_ids
 
+    def _update_eos_termination(
+        self,
+        ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        batch_idx: int,
+        eos_pos: int
+    ) -> None:
+        """Update sequence after EOS is sampled: mark remaining positions as PAD.
+
+        Args:
+            ids: Token IDs of shape [batch, seq_len].
+            attention_mask: Attention mask of shape [batch, seq_len].
+            batch_idx: Index of the sequence in the batch.
+            eos_pos: Position where EOS was sampled.
+        """
+        seq_len = ids.shape[1]
+        # Mark all positions after EOS as PAD
+        if eos_pos + 1 < seq_len:
+            ids[batch_idx, eos_pos + 1:] = self.pad_id
+            attention_mask[batch_idx, eos_pos + 1:] = 0
+
     def sample(
         self,
         batch_size: int,
         seq_length: int,
-        show_progress: bool = True
+        show_progress: bool = True,
+        allow_natural_eos: bool = False
     ) -> Tuple[torch.Tensor, List[str]]:
         """Sample new polymers with exactly two '[I+3]' placeholder tokens.
 
@@ -186,6 +229,11 @@ class ConstrainedSampler:
             batch_size: Number of samples to generate.
             seq_length: Sequence length.
             show_progress: Whether to show progress bar.
+            allow_natural_eos: If True, allow EOS to be sampled naturally.
+                              If False (default), fix EOS at last position.
+                              Note: Natural EOS requires model training with
+                              variable-length sequences. Use lengths parameter
+                              in sample_batch() for best results.
 
         Returns:
             Tuple of (token_ids, selfies_strings).
@@ -193,7 +241,7 @@ class ConstrainedSampler:
         self.diffusion_model.eval()
         backbone = self.diffusion_model.backbone
 
-        # Initialize with fully masked sequence (except BOS/EOS)
+        # Initialize with fully masked sequence (except BOS)
         ids = torch.full(
             (batch_size, seq_length),
             self.mask_id,
@@ -201,7 +249,14 @@ class ConstrainedSampler:
             device=self.device
         )
         ids[:, 0] = self.bos_id
-        ids[:, -1] = self.eos_id
+
+        # Track which sequences have terminated (sampled EOS)
+        has_eos = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+
+        if not allow_natural_eos:
+            # Legacy behavior: fix EOS at last position
+            ids[:, -1] = self.eos_id
+            has_eos[:] = True
 
         # Create attention mask
         attention_mask = torch.ones_like(ids)
@@ -229,11 +284,29 @@ class ConstrainedSampler:
 
             # Forbid special tokens at masked positions
             is_masked = ids == self.mask_id
-            for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
+            # Always forbid MASK, PAD, BOS at masked positions
+            for tok in [self.mask_id, self.pad_id, self.bos_id]:
                 logits[:, :, tok] = torch.where(
                     is_masked.unsqueeze(-1).expand_as(logits[:, :, tok:tok+1]).squeeze(-1),
                     torch.tensor(float('-inf'), device=logits.device),
                     logits[:, :, tok]
+                )
+
+            # For EOS: forbid if already has EOS, otherwise allow natural termination
+            if allow_natural_eos:
+                # Forbid EOS only for sequences that already have EOS
+                eos_forbidden = has_eos.unsqueeze(1) & is_masked
+                logits[:, :, self.eos_id] = torch.where(
+                    eos_forbidden,
+                    torch.tensor(float('-inf'), device=logits.device, dtype=logits.dtype),
+                    logits[:, :, self.eos_id]
+                )
+            else:
+                # Legacy: forbid EOS everywhere
+                logits[:, :, self.eos_id] = torch.where(
+                    is_masked.unsqueeze(-1).expand_as(logits[:, :, self.eos_id:self.eos_id+1]).squeeze(-1),
+                    torch.tensor(float('-inf'), device=logits.device),
+                    logits[:, :, self.eos_id]
                 )
 
             # Sample from masked positions
@@ -253,13 +326,26 @@ class ConstrainedSampler:
                 unmask_indices = torch.randperm(len(masked_pos), device=self.device)[:num_unmask]
                 unmask_positions = masked_pos[unmask_indices]
 
+                # Sort positions so we process left-to-right (for proper EOS handling)
+                unmask_positions, _ = torch.sort(unmask_positions)
+
                 # Sample tokens for these positions SEQUENTIALLY with constraint updates
                 for pos in unmask_positions:
+                    # Skip if this position was already filled (by EOS termination)
+                    if ids[i, pos] != self.mask_id:
+                        continue
+
                     sampled = torch.multinomial(probs[i, pos], 1)
                     ids[i, pos] = sampled
 
-                    # Update placeholder constraint dynamically
                     sampled_token = sampled.item()
+
+                    # If we sampled EOS, terminate the sequence
+                    if sampled_token == self.eos_id:
+                        has_eos[i] = True
+                        self._update_eos_termination(ids, attention_mask, i, pos.item())
+                        # No need to process remaining positions for this sequence
+                        break
 
                     # If we sampled a placeholder, update constraint for remaining positions
                     if sampled_token == self.placeholder_id:
@@ -277,6 +363,23 @@ class ConstrainedSampler:
             if t == 1:
                 final_logits = logits
 
+        # Ensure all sequences have EOS (add at end if needed)
+        for i in range(batch_size):
+            if not has_eos[i]:
+                # Find last non-PAD position
+                non_pad = ids[i] != self.pad_id
+                if non_pad.any():
+                    last_pos = torch.where(non_pad)[0][-1].item()
+                    # If last position is MASK, replace with EOS; otherwise append EOS
+                    if ids[i, last_pos] == self.mask_id:
+                        ids[i, last_pos] = self.eos_id
+                    elif last_pos + 1 < seq_length:
+                        ids[i, last_pos + 1] = self.eos_id
+                        if last_pos + 2 < seq_length:
+                            ids[i, last_pos + 2:] = self.pad_id
+                            attention_mask[i, last_pos + 2:] = 0
+                has_eos[i] = True
+
         # Fix placeholder count in final sequences (ensure exactly 2)
         ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
 
@@ -290,15 +393,18 @@ class ConstrainedSampler:
         num_samples: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> Tuple[List[torch.Tensor], List[str]]:
         """Sample multiple batches of polymers.
 
         Args:
             num_samples: Total number of samples.
-            seq_length: Sequence length.
+            seq_length: Default sequence length (used if lengths is None).
             batch_size: Batch size for sampling.
             show_progress: Whether to show progress.
+            lengths: Optional list of sequence lengths for each sample.
+                    If provided, samples are grouped by length for efficient batching.
 
         Returns:
             Tuple of (all_ids, all_selfies).
@@ -306,19 +412,62 @@ class ConstrainedSampler:
         all_ids = []
         all_smiles = []
 
-        num_batches = (num_samples + batch_size - 1) // batch_size
+        if lengths is None:
+            # Use fixed length for all samples
+            num_batches = (num_samples + batch_size - 1) // batch_size
 
-        for batch_idx in tqdm(range(num_batches), desc="Batch sampling", disable=not show_progress):
-            current_batch_size = min(batch_size, num_samples - len(all_smiles))
+            for batch_idx in tqdm(range(num_batches), desc="Batch sampling", disable=not show_progress):
+                current_batch_size = min(batch_size, num_samples - len(all_smiles))
 
-            ids, smiles = self.sample(
-                current_batch_size,
-                seq_length,
-                show_progress=False
-            )
+                ids, smiles = self.sample(
+                    current_batch_size,
+                    seq_length,
+                    show_progress=False
+                )
 
-            all_ids.append(ids)
-            all_smiles.extend(smiles)
+                all_ids.append(ids)
+                all_smiles.extend(smiles)
+        else:
+            # Group samples by length for efficient batching
+            from collections import defaultdict
+            length_groups = defaultdict(list)
+            for idx, length in enumerate(lengths):
+                length_groups[length].append(idx)
+
+            # Create result arrays
+            result_smiles = [None] * len(lengths)
+
+            # Process each length group
+            sorted_lengths = sorted(length_groups.keys())
+            pbar = tqdm(total=len(lengths), desc="Length-distributed sampling", disable=not show_progress)
+
+            for length in sorted_lengths:
+                indices = length_groups[length]
+                group_size = len(indices)
+
+                # Sample in batches for this length
+                group_smiles = []
+                num_group_batches = (group_size + batch_size - 1) // batch_size
+
+                for batch_idx in range(num_group_batches):
+                    current_batch_size = min(batch_size, group_size - len(group_smiles))
+
+                    ids, smiles = self.sample(
+                        current_batch_size,
+                        length,
+                        show_progress=False
+                    )
+
+                    all_ids.append(ids)
+                    group_smiles.extend(smiles)
+                    pbar.update(current_batch_size)
+
+                # Assign results back to original indices
+                for local_idx, global_idx in enumerate(indices):
+                    result_smiles[global_idx] = group_smiles[local_idx]
+
+            pbar.close()
+            all_smiles = result_smiles
 
         return all_ids, all_smiles
 
@@ -377,7 +526,8 @@ class ConstrainedSampler:
         seq_length: int,
         prefix_ids: Optional[torch.Tensor] = None,
         suffix_ids: Optional[torch.Tensor] = None,
-        show_progress: bool = True
+        show_progress: bool = True,
+        allow_natural_eos: bool = False
     ) -> Tuple[torch.Tensor, List[str]]:
         """Sample with optional prefix/suffix conditioning.
 
@@ -390,12 +540,18 @@ class ConstrainedSampler:
             prefix_ids: Fixed prefix tokens.
             suffix_ids: Fixed suffix tokens.
             show_progress: Whether to show progress.
+            allow_natural_eos: If True, allow EOS to be sampled naturally.
+                              If False (default), fix EOS at last position.
+                              Ignored if suffix_ids is provided (EOS fixed at end).
 
         Returns:
             Tuple of (token_ids, selfies_strings).
         """
         self.diffusion_model.eval()
         backbone = self.diffusion_model.backbone
+
+        # If suffix is provided, we need fixed EOS at end
+        use_natural_eos = allow_natural_eos and suffix_ids is None
 
         # Initialize
         ids = torch.full(
@@ -405,12 +561,19 @@ class ConstrainedSampler:
             device=self.device
         )
         ids[:, 0] = self.bos_id
-        ids[:, -1] = self.eos_id
+
+        # Track which sequences have terminated (sampled EOS)
+        has_eos = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
 
         # Apply prefix/suffix constraints
         fixed_mask = torch.zeros_like(ids, dtype=torch.bool)
         fixed_mask[:, 0] = True  # BOS
-        fixed_mask[:, -1] = True  # EOS
+
+        if not use_natural_eos:
+            # Fixed EOS at last position
+            ids[:, -1] = self.eos_id
+            fixed_mask[:, -1] = True
+            has_eos[:] = True
 
         if prefix_ids is not None:
             prefix_len = prefix_ids.shape[1]
@@ -443,11 +606,30 @@ class ConstrainedSampler:
 
             # Forbid special tokens at masked positions
             is_masked = (ids == self.mask_id) & (~fixed_mask)
-            for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
+
+            # Always forbid MASK, PAD, BOS at masked positions
+            for tok in [self.mask_id, self.pad_id, self.bos_id]:
                 logits[:, :, tok] = torch.where(
                     is_masked.unsqueeze(-1).expand_as(logits[:, :, tok:tok+1]).squeeze(-1),
                     torch.tensor(float('-inf'), device=logits.device),
                     logits[:, :, tok]
+                )
+
+            # For EOS: allow natural termination if enabled
+            if use_natural_eos:
+                # Forbid EOS only for sequences that already have EOS
+                eos_forbidden = has_eos.unsqueeze(1) & is_masked
+                logits[:, :, self.eos_id] = torch.where(
+                    eos_forbidden,
+                    torch.tensor(float('-inf'), device=logits.device, dtype=logits.dtype),
+                    logits[:, :, self.eos_id]
+                )
+            else:
+                # Fixed EOS: forbid everywhere
+                logits[:, :, self.eos_id] = torch.where(
+                    is_masked.unsqueeze(-1).expand_as(logits[:, :, self.eos_id:self.eos_id+1]).squeeze(-1),
+                    torch.tensor(float('-inf'), device=logits.device),
+                    logits[:, :, self.eos_id]
                 )
 
             probs = F.softmax(logits, dim=-1)
@@ -463,13 +645,25 @@ class ConstrainedSampler:
                 unmask_indices = torch.randperm(len(masked_pos), device=self.device)[:num_unmask]
                 unmask_positions = masked_pos[unmask_indices]
 
+                # Sort positions so we process left-to-right (for proper EOS handling)
+                unmask_positions, _ = torch.sort(unmask_positions)
+
                 # Sample tokens for these positions SEQUENTIALLY with constraint updates
                 for pos in unmask_positions:
+                    # Skip if this position was already filled (by EOS termination)
+                    if ids[i, pos] != self.mask_id:
+                        continue
+
                     sampled = torch.multinomial(probs[i, pos], 1)
                     ids[i, pos] = sampled
 
-                    # Update placeholder constraint dynamically
                     sampled_token = sampled.item()
+
+                    # If we sampled EOS, terminate the sequence
+                    if sampled_token == self.eos_id:
+                        has_eos[i] = True
+                        self._update_eos_termination(ids, attention_mask, i, pos.item())
+                        break
 
                     # If we sampled a placeholder, update constraint for remaining positions
                     if sampled_token == self.placeholder_id:
@@ -485,6 +679,22 @@ class ConstrainedSampler:
 
             if t == 1:
                 final_logits = logits
+
+        # Ensure all sequences have EOS (add at end if needed)
+        if use_natural_eos:
+            for i in range(batch_size):
+                if not has_eos[i]:
+                    non_pad = ids[i] != self.pad_id
+                    if non_pad.any():
+                        last_pos = torch.where(non_pad)[0][-1].item()
+                        if ids[i, last_pos] == self.mask_id:
+                            ids[i, last_pos] = self.eos_id
+                        elif last_pos + 1 < seq_length:
+                            ids[i, last_pos + 1] = self.eos_id
+                            if last_pos + 2 < seq_length:
+                                ids[i, last_pos + 2:] = self.pad_id
+                                attention_mask[i, last_pos + 2:] = 0
+                    has_eos[i] = True
 
         # Fix placeholder count in final sequences (ensure exactly 2)
         ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)

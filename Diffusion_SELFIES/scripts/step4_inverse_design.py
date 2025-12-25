@@ -175,6 +175,20 @@ def main(args):
     print(f"   Epsilon: {args.epsilon}")
     print(f"   Candidates per target: {args.num_candidates}")
 
+    # Sample lengths from training distribution
+    total_candidates = args.num_candidates * len(target_values)
+    replace = total_candidates > len(train_df)
+    sampled = train_df['selfies'].sample(
+        n=total_candidates,
+        replace=replace,
+        random_state=config['data']['random_seed']
+    )
+    lengths = [
+        min(len(tokenizer.tokenize(s)) + 2, tokenizer.max_length)
+        for s in sampled.tolist()
+    ]
+    print(f"   Using training length distribution (min={min(lengths)}, max={max(lengths)})")
+
     # Run design
     results_df = designer.design_multiple_targets(
         target_values=target_values,
@@ -182,7 +196,8 @@ def main(args):
         num_candidates_per_target=args.num_candidates,
         seq_length=tokenizer.max_length,
         batch_size=config['sampling']['batch_size'],
-        show_progress=True
+        show_progress=True,
+        lengths=lengths
     )
 
     # Save results
@@ -214,13 +229,25 @@ def main(args):
     # Run detailed design for best target
     print("\n7. Running detailed analysis for middle target...")
     middle_target = target_values[len(target_values) // 2]
+    # Sample lengths for detailed design
+    detailed_num = args.num_candidates * 2
+    detailed_sampled = train_df['selfies'].sample(
+        n=detailed_num,
+        replace=detailed_num > len(train_df),
+        random_state=config['data']['random_seed'] + 1
+    )
+    detailed_lengths = [
+        min(len(tokenizer.tokenize(s)) + 2, tokenizer.max_length)
+        for s in detailed_sampled.tolist()
+    ]
     detailed_results = designer.design(
         target_value=middle_target,
         epsilon=args.epsilon,
-        num_candidates=args.num_candidates * 2,
+        num_candidates=detailed_num,
         seq_length=tokenizer.max_length,
         batch_size=config['sampling']['batch_size'],
-        show_progress=True
+        show_progress=True,
+        lengths=detailed_lengths
     )
 
     # Histogram of predictions around target

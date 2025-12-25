@@ -164,6 +164,19 @@ def main(args):
         normalization_params=norm_params
     )
 
+    # Sample lengths from training distribution
+    replace = args.num_candidates > len(train_df)
+    sampled = train_df['selfies'].sample(
+        n=args.num_candidates,
+        replace=replace,
+        random_state=config['data']['random_seed']
+    )
+    lengths = [
+        min(len(tokenizer.tokenize(s)) + 2, tokenizer.max_length)
+        for s in sampled.tolist()
+    ]
+    print(f"   Using training length distribution (min={min(lengths)}, max={max(lengths)})")
+
     # Run class-only design
     print(f"\n6. Running class-guided design for {args.polymer_class}...")
     class_results = designer.design_by_class(
@@ -171,7 +184,8 @@ def main(args):
         num_candidates=args.num_candidates,
         seq_length=tokenizer.max_length,
         batch_size=config['sampling']['batch_size'],
-        show_progress=True
+        show_progress=True,
+        lengths=lengths
     )
 
     # Save class results
@@ -192,6 +206,16 @@ def main(args):
     # Run joint design if property specified
     if args.property and args.target_value is not None:
         print(f"\n7. Running joint design: {args.polymer_class} + {args.property}={args.target_value}...")
+        # Sample new lengths for joint design
+        joint_sampled = train_df['selfies'].sample(
+            n=args.num_candidates,
+            replace=args.num_candidates > len(train_df),
+            random_state=config['data']['random_seed'] + 1
+        )
+        joint_lengths = [
+            min(len(tokenizer.tokenize(s)) + 2, tokenizer.max_length)
+            for s in joint_sampled.tolist()
+        ]
         joint_results = designer.design_joint(
             target_class=args.polymer_class,
             target_value=args.target_value,
@@ -199,7 +223,8 @@ def main(args):
             num_candidates=args.num_candidates,
             seq_length=tokenizer.max_length,
             batch_size=config['sampling']['batch_size'],
-            show_progress=True
+            show_progress=True,
+            lengths=joint_lengths
         )
 
         # Save joint results

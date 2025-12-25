@@ -55,7 +55,8 @@ class InverseDesigner:
         num_candidates: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> Dict:
         """Run inverse design for a target property value.
 
@@ -66,6 +67,8 @@ class InverseDesigner:
             seq_length: Sequence length.
             batch_size: Batch size for generation.
             show_progress: Whether to show progress.
+            lengths: Optional list of sequence lengths for each sample.
+                    If provided, samples use training length distribution.
 
         Returns:
             Dictionary with results.
@@ -75,7 +78,8 @@ class InverseDesigner:
             print(f"Generating {num_candidates} candidates...")
 
         _, all_selfies = self.sampler.sample_batch(
-            num_candidates, seq_length, batch_size, show_progress
+            num_candidates, seq_length, batch_size, show_progress,
+            lengths=lengths
         )
 
         # Convert SELFIES to p-SMILES and filter to valid molecules with exactly 2 stars
@@ -158,7 +162,8 @@ class InverseDesigner:
         num_candidates_per_target: int,
         seq_length: int,
         batch_size: int = 256,
-        show_progress: bool = True
+        show_progress: bool = True,
+        lengths: Optional[List[int]] = None
     ) -> pd.DataFrame:
         """Run inverse design for multiple target values.
 
@@ -169,20 +174,30 @@ class InverseDesigner:
             seq_length: Sequence length.
             batch_size: Batch size.
             show_progress: Whether to show progress.
+            lengths: Optional list of sequence lengths for all samples.
+                    If provided, will be split across targets.
 
         Returns:
             DataFrame with results for all targets.
         """
         all_results = []
 
-        for target in tqdm(target_values, desc="Targets", disable=not show_progress):
+        for i, target in enumerate(tqdm(target_values, desc="Targets", disable=not show_progress)):
+            # Get lengths for this target's candidates
+            target_lengths = None
+            if lengths is not None:
+                start_idx = i * num_candidates_per_target
+                end_idx = start_idx + num_candidates_per_target
+                target_lengths = lengths[start_idx:end_idx]
+
             results = self.design(
                 target_value=target,
                 epsilon=epsilon,
                 num_candidates=num_candidates_per_target,
                 seq_length=seq_length,
                 batch_size=batch_size,
-                show_progress=False
+                show_progress=False,
+                lengths=target_lengths
             )
 
             # Remove large lists for CSV
