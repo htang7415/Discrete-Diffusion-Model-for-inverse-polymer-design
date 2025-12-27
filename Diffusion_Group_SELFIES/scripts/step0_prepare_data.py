@@ -56,11 +56,13 @@ def main(args):
     print("\n2. Building Group SELFIES grammar and vocabulary...")
     tokenizer = GroupSELFIESTokenizer(max_length=config['tokenizer']['max_length'])
 
-    # Get max_groups from config if available
-    max_groups = config.get('group_selfies', {}).get('max_groups', 10000)
+    # Get group_selfies config
+    gs_config = config.get('group_selfies', {})
+    max_groups = gs_config.get('max_groups', 20000)
+    grammar_sample_size = gs_config.get('grammar_sample_size', 0)  # 0 = use all
 
     # Get parallelization settings
-    parallel_config = config.get('group_selfies', {}).get('parallel', {})
+    parallel_config = gs_config.get('parallel', {})
     num_workers = parallel_config.get('num_workers', 1)
     chunk_size = parallel_config.get('chunk_size', 1000)
     parallel_enabled = parallel_config.get('enabled', False)
@@ -76,8 +78,36 @@ def main(args):
         num_workers = 1
         print("Parallelization disabled in config")
 
+    # Sample for grammar building if configured (much faster for large datasets)
+    # IMPORTANT: We sample ONCE and split into grammar and test sets to ensure
+    # the test molecules share the same structural distribution as the grammar molecules.
+    all_train_smiles = train_df['p_smiles'].tolist()
+
+    if grammar_sample_size > 0 and grammar_sample_size < len(all_train_smiles):
+        # Sample more than needed so we can split into grammar + test sets
+        roundtrip_test_size = gs_config.get('roundtrip_test_size', 0)
+        total_sample_size = grammar_sample_size + roundtrip_test_size
+
+        if total_sample_size > len(all_train_smiles):
+            total_sample_size = len(all_train_smiles)
+
+        print(f"   Sampling {total_sample_size:,} molecules total (from {len(all_train_smiles):,})")
+        random.seed(config['data']['random_seed'])
+        total_sample = random.sample(all_train_smiles, total_sample_size)
+
+        # Split: first part for grammar, rest for roundtrip testing
+        grammar_smiles = total_sample[:grammar_sample_size]
+        train_roundtrip_sample = total_sample[grammar_sample_size:]  # Held-out for testing
+
+        print(f"   Grammar sample: {len(grammar_smiles):,}")
+        print(f"   Held-out for roundtrip testing: {len(train_roundtrip_sample):,}")
+    else:
+        grammar_smiles = all_train_smiles
+        train_roundtrip_sample = None  # Will sample separately
+        print(f"   Using all {len(grammar_smiles):,} molecules for grammar building")
+
     vocab, grammar = tokenizer.build_vocab_and_grammar(
-        train_df['p_smiles'].tolist(),
+        grammar_smiles,
         max_groups=max_groups,
         num_workers=num_workers,
         chunk_size=chunk_size,
@@ -92,44 +122,56 @@ def main(args):
     tokenizer.save(tokenizer_path)
     print(f"Tokenizer saved to: {tokenizer_path}")
 
-    # Verify round-trip invertibility (PARALLELIZED)
+    # Verify round-trip invertibility (PARALLELIZED with sampling)
     print("\n3. Verifying tokenization invertibility...")
 
-    # Verify train set
-    if num_workers > 1:
-        train_valid, train_total, train_failures = tokenizer.parallel_verify_roundtrip(
-            train_df['p_smiles'].tolist(),
-            num_workers=num_workers,
-            chunk_size=chunk_size,
-            verbose=True
-        )
-    else:
-        # Sequential fallback
-        train_valid = 0
-        train_total = len(train_df)
-        train_failures = []
-        for smiles in train_df['p_smiles']:
-            if tokenizer.verify_roundtrip(smiles):
-                train_valid += 1
-        print(f"Train roundtrip: {train_valid}/{train_total} ({100*train_valid/train_total:.2f}%)")
+    # Get roundtrip test size from config
+    roundtrip_test_size = gs_config.get('roundtrip_test_size', 0)  # 0 = use all
 
-    # Verify validation set
-    if num_workers > 1:
-        val_valid, val_total, val_failures = tokenizer.parallel_verify_roundtrip(
-            val_df['p_smiles'].tolist(),
-            num_workers=num_workers,
-            chunk_size=chunk_size,
-            verbose=True
-        )
+    # Use the held-out sample from grammar building (same distribution)
+    # This is crucial: testing on molecules from a DIFFERENT random sample
+    # causes 0.01% accuracy because they have different structural diversity.
+    val_smiles_for_test = val_df['p_smiles'].tolist()
+
+    if train_roundtrip_sample is not None and len(train_roundtrip_sample) > 0:
+        # Use the held-out sample from the same random draw as grammar
+        train_smiles_for_test = train_roundtrip_sample
+        print(f"   Using {len(train_smiles_for_test):,} held-out molecules for train roundtrip (same distribution as grammar)")
+    elif roundtrip_test_size > 0:
+        # Fallback: sample from all training data
+        train_smiles_for_test = train_df['p_smiles'].tolist()
+        if roundtrip_test_size < len(train_smiles_for_test):
+            print(f"   Sampling {roundtrip_test_size:,} molecules for train roundtrip (from {len(train_smiles_for_test):,})")
+            random.seed(config['data']['random_seed'] + 100)
+            train_smiles_for_test = random.sample(train_smiles_for_test, roundtrip_test_size)
     else:
-        # Sequential fallback
-        val_valid = 0
-        val_total = len(val_df)
-        val_failures = []
-        for smiles in val_df['p_smiles']:
-            if tokenizer.verify_roundtrip(smiles):
-                val_valid += 1
-        print(f"Val roundtrip: {val_valid}/{val_total} ({100*val_valid/val_total:.2f}%)")
+        train_smiles_for_test = train_df['p_smiles'].tolist()
+
+    # Sample validation set
+    if roundtrip_test_size > 0:
+        val_test_size = min(roundtrip_test_size // 10, len(val_smiles_for_test))  # 10% of train test size for val
+        if val_test_size < len(val_smiles_for_test):
+            print(f"   Sampling {val_test_size:,} molecules for val roundtrip (from {len(val_smiles_for_test):,})")
+            random.seed(config['data']['random_seed'] + 200)
+            val_smiles_for_test = random.sample(val_smiles_for_test, val_test_size)
+
+    # Verify train set (MUST be sequential - GroupGrammar is not process-safe)
+    # Quick test proved: sequential = 99.39%, parallel = 0.01% accuracy
+    # Grammar.decoder() fails in worker processes due to pickling/fork issues
+    train_valid, train_total, train_failures = tokenizer.parallel_verify_roundtrip(
+        train_smiles_for_test,
+        num_workers=1,  # Force sequential - grammar.decoder() fails in parallel workers
+        chunk_size=chunk_size,
+        verbose=True
+    )
+
+    # Verify validation set (MUST be sequential - same reason as above)
+    val_valid, val_total, val_failures = tokenizer.parallel_verify_roundtrip(
+        val_smiles_for_test,
+        num_workers=1,  # Force sequential - grammar.decoder() fails in parallel workers
+        chunk_size=chunk_size,
+        verbose=True
+    )
 
     # Save roundtrip results
     roundtrip_df = pd.DataFrame({

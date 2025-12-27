@@ -33,13 +33,17 @@ tokenizer:
 
 # Group SELFIES settings
 group_selfies:
-  max_groups: 2000          # Maximum number of groups in grammar
+  max_groups: 20000         # Maximum number of groups in grammar (increased from 2000)
   diversity_selection: "simple"  # Selection method for fragments
+
+  # Sampling settings for efficient grammar building
+  grammar_sample_size: 500000         # Sample size for grammar building (0 = use all)
+  roundtrip_test_size: 500000         # Sample size for roundtrip verification (0 = use all)
 
   # Parallelization settings for vocabulary building
   parallel:
     enabled: true           # Enable/disable parallelization
-    num_workers: 80         # Number of CPU workers (0 = auto-detect, 1 = sequential)
+    num_workers: 100         # Number of CPU workers (0 = auto-detect, 1 = sequential)
     chunk_size: 10000        # Number of molecules per chunk
 
 # Backbone model (GPT-2-small-like)
