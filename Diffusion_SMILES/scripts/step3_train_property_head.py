@@ -136,7 +136,7 @@ def main(args):
 
     # Load backbone
     print("\n3. Loading backbone...")
-    checkpoint_path = args.backbone_checkpoint or (results_dir / 'checkpoints' / 'backbone_best.pt')
+    checkpoint_path = args.backbone_checkpoint or (results_dir / 'step1_backbone' / 'checkpoints' / 'backbone_best.pt')
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     # Get backbone config based on model_size

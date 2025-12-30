@@ -88,7 +88,7 @@ class BackboneTrainer:
         # Compile model for faster execution
         if self.compile_model and device == 'cuda':
             print("Compiling model with torch.compile()...")
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+            self.model = torch.compile(self.model, mode="default")
 
         # Training config
         train_config = config['training_backbone']

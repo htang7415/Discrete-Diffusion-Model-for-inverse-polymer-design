@@ -1,6 +1,6 @@
 {
   "model_size": "small",
-  "experiment_start": "2025-12-28T13:42:01.966349",
+  "experiment_start": "2025-12-29T11:19:33.474655",
   "model_config": {
     "hidden_size": 384,
     "num_layers": 6,
@@ -19,11 +19,27 @@
   "num_parameters": 10747008,
   "steps": {
     "step1_backbone": {
-      "start_time": "2025-12-28T13:42:01.966714",
-      "status": "running",
-      "end_time": null,
-      "duration_seconds": null,
+      "start_time": "2025-12-29T11:19:33.475457",
+      "status": "completed",
+      "end_time": "2025-12-30T02:06:18.744452",
+      "duration_seconds": 53205.268995,
       "metrics": {}
+    },
+    "step2_sampling": {
+      "start_time": "2025-12-30T02:06:18.747561",
+      "status": "failed",
+      "end_time": "2025-12-30T02:07:53.703940",
+      "duration_seconds": null,
+      "metrics": {},
+      "error": "Step failed with return code 1\nSTDERR: Traceback (most recent call last):\n  File \"/home/htang228/Machine_learning/Diffusion_model/Discrete-Diffusion-Model-for-inverse-polymer-design/Diffusion_SELFIES/scripts/step2_sample_and_evaluate.py\", line 279, in <module>\n    main(args)\n  File \"/home/htang228/Machine_learning/Diffusion_model/Discrete-Diffusion-Model-for-inverse-polymer-design/Diffusion_SELFIES/scripts/step2_sample_and_evaluate.py\", line 75, in main\n    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)\n  File \"/home/htang228/anaconda3/envs/genmol/lib/python3.10/site-packages/torch/serialization.py\", line 1484, in load\n    with _open_file_like(f, \"rb\") as opened_file:\n  File \"/home/htang228/anaconda3/envs/genmol/lib/python3.10/site-packages/torch/serialization.py\", line 759, in _open_file_like\n    return _open_file(name_or_buffer, mode)\n  File \"/home/htang228/anaconda3/envs/genmol/lib/python3.10/site-packages/torch/serialization.py\", line 740, in __init__\n    super().__init__(open(name, mode))\nFileNotFoundError: [Errno 2] No such file or directory: 'results_small/checkpoints/backbone_best.pt'\n"
     }
+  },
+  "experiment_end": "2025-12-30T02:07:53.704626",
+  "total_duration_seconds": 53300.229971,
+  "summary": {
+    "total_steps": 2,
+    "completed_steps": 1,
+    "failed_steps": 1,
+    "success": false
   }
 }

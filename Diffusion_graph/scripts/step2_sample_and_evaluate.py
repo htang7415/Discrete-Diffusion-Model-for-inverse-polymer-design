@@ -93,7 +93,7 @@ def main(args):
 
     # Load model
     print("\n4. Loading model...")
-    checkpoint_path = args.checkpoint or (results_dir / 'checkpoints' / 'graph_backbone_best.pt')
+    checkpoint_path = args.checkpoint or (results_dir / 'step1_backbone' / 'checkpoints' / 'graph_backbone_best.pt')
     print(f"   Checkpoint: {checkpoint_path}")
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)

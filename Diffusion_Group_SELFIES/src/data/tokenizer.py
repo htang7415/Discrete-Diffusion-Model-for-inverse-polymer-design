@@ -401,11 +401,14 @@ class GroupSELFIESTokenizer:
         except Exception:
             return None
 
-    def tokenize(self, smiles: str) -> List[str]:
+    def tokenize(self, smiles: str, canonicalize: bool = True) -> List[str]:
         """Tokenize a p-SMILES string to Group SELFIES tokens.
 
         Args:
             smiles: Input p-SMILES string (with '*' for polymer connections).
+            canonicalize: If True, canonicalize the molecule before encoding.
+                This improves roundtrip consistency by ensuring the same
+                canonical representation regardless of input SMILES order.
 
         Returns:
             List of Group SELFIES tokens.
@@ -423,6 +426,15 @@ class GroupSELFIESTokenizer:
             return ['[UNK]']
 
         try:
+            # Pre-canonicalize for consistent encoding
+            # This helps improve roundtrip accuracy by ensuring the grammar
+            # always sees molecules in a consistent canonical form
+            if canonicalize:
+                canon_smiles = Chem.MolToSmiles(mol, canonical=True)
+                mol = Chem.MolFromSmiles(canon_smiles)
+                if mol is None:
+                    return ['[UNK]']
+
             # Encode to Group SELFIES
             with _suppress_stdout_stderr():
                 gsf_string = self.grammar.full_encoder(mol)
@@ -1090,10 +1102,18 @@ class GroupSELFIESTokenizer:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Extract group SMILES from grammar for reliable reconstruction
+        # The grammar object itself can have pickling issues, so we store
+        # the group SMILES and recreate the grammar on load
+        group_smiles = None
+        if self.grammar is not None:
+            group_smiles = [g.canonsmiles for _, g in self.grammar.vocab.items()]
+
         data = {
             'vocab': self.vocab,
             'max_length': self.max_length,
-            'grammar': self.grammar,
+            'grammar': self.grammar,  # Keep for backwards compatibility
+            'group_smiles': group_smiles,  # New: for reliable grammar reconstruction
             'placeholder_token': self._placeholder_token,
             'placeholder_token_id': self._placeholder_token_id
         }
@@ -1111,16 +1131,30 @@ class GroupSELFIESTokenizer:
         Returns:
             Loaded tokenizer instance.
         """
+        from group_selfies import GroupGrammar, Group
+
         with open(path, 'rb') as f:
             data = pickle.load(f)
 
+        # Prefer reconstructing grammar from group_smiles (more reliable)
+        # The pickled grammar object can have internal state issues
+        grammar = None
+        group_smiles = data.get('group_smiles')
+        if group_smiles is not None:
+            groups = [Group(name=f"G{i}", canonsmiles=g) for i, g in enumerate(group_smiles)]
+            grammar = GroupGrammar(groups)
+        else:
+            # Fallback to pickled grammar for backwards compatibility
+            grammar = data.get('grammar')
+
         tokenizer = cls(
-            grammar=data['grammar'],
+            grammar=grammar,
             vocab=data['vocab'],
             max_length=data['max_length']
         )
         tokenizer._placeholder_token = data.get('placeholder_token')
         tokenizer._placeholder_token_id = data.get('placeholder_token_id')
+        tokenizer.group_smiles = group_smiles  # Store for parallel verification
 
         return tokenizer
 

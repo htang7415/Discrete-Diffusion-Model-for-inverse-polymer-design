@@ -85,7 +85,7 @@ def main(args):
     diffusion_model = create_graph_diffusion(backbone, config, graph_config)
 
     backbone_ckpt = torch.load(
-        results_dir / 'checkpoints' / 'graph_backbone_best.pt',
+        results_dir / 'step1_backbone' / 'checkpoints' / 'graph_backbone_best.pt',
         map_location=device,
         weights_only=False
     )

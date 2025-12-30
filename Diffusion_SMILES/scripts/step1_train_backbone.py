@@ -173,7 +173,7 @@ def main(args):
         val_dataloader=val_loader,
         config=config,
         device=device,
-        output_dir=str(results_dir),
+        output_dir=str(step_dir),
         step_dir=str(step_dir)
     )
 
@@ -200,7 +200,7 @@ def main(args):
     print("\n" + "=" * 50)
     print("Backbone training complete!")
     print(f"Best validation loss: {history['best_val_loss']:.4f}")
-    print(f"Checkpoints saved to: {results_dir / 'checkpoints'}")
+    print(f"Checkpoints saved to: {step_dir / 'checkpoints'}")
     print("=" * 50)
 
 

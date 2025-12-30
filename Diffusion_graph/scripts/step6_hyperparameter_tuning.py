@@ -138,7 +138,7 @@ def tune_property_head(args, config, results_dir, device):
         eos_token_id=tokenizer.eos_token_id
     )
 
-    backbone_ckpt = torch.load(results_dir / 'checkpoints' / 'backbone_best.pt', map_location=device, weights_only=False)
+    backbone_ckpt = torch.load(results_dir / 'step1_backbone' / 'checkpoints' / 'graph_backbone_best.pt', map_location=device, weights_only=False)
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = backbone_ckpt['model_state_dict']
     if any(k.startswith('_orig_mod.') for k in state_dict.keys()):

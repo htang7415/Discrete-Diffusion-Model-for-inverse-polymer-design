@@ -33,12 +33,12 @@ tokenizer:
 
 # Group SELFIES settings
 group_selfies:
-  max_groups: 20000         # Maximum number of groups in grammar (increased from 2000)
+  max_groups: 50000         # Maximum number of groups in grammar (increased for better coverage)
   diversity_selection: "simple"  # Selection method for fragments
 
   # Sampling settings for grammar building and verification
-  grammar_sample_size: 500000         # Use all 19M molecules for grammar building
-  roundtrip_test_size: 500000         # Verify all molecules (parallel now works)
+  grammar_sample_size: 0         # Use all 19M molecules for grammar building
+  roundtrip_test_size: 0         # Verify all molecules (parallel now works)
 
   # Parallelization settings for vocabulary building
   parallel:
