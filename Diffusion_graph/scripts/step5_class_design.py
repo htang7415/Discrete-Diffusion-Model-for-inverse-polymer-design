@@ -118,12 +118,29 @@ def main(args):
     norm_params = {'mean': 0.0, 'std': 1.0}
     if args.property:
         print(f"\n5. Loading property predictor for {args.property}...")
+
+        # Load checkpoint first to get hyperparameters
+        property_ckpt = torch.load(
+            results_dir / 'checkpoints' / f'{args.property}_best.pt',
+            map_location=device,
+            weights_only=False
+        )
+        norm_params = property_ckpt.get('normalization_params', {'mean': 0.0, 'std': 1.0})
+
+        # Get hyperparameters from checkpoint (if tuned) or config
         head_config = config['property_head']
         backbone_config = config.get('backbone', config.get('graph_backbone', {}))
+        if 'hidden_sizes' in property_ckpt and property_ckpt['hidden_sizes'] is not None:
+            hidden_sizes = property_ckpt['hidden_sizes']
+            dropout = property_ckpt.get('dropout', head_config['dropout'])
+        else:
+            hidden_sizes = head_config['hidden_sizes']
+            dropout = head_config['dropout']
+
         property_head = GraphPropertyHead(
             input_size=backbone_config.get('hidden_size', 768),
-            hidden_sizes=head_config['hidden_sizes'],
-            dropout=head_config['dropout']
+            hidden_sizes=hidden_sizes,
+            dropout=dropout
         )
 
         property_predictor = GraphPropertyPredictor(
@@ -136,14 +153,6 @@ def main(args):
         property_predictor.load_property_head(results_dir / 'checkpoints' / f'{args.property}_best.pt')
         property_predictor = property_predictor.to(device)
         property_predictor.eval()
-
-        # Load normalization parameters
-        property_ckpt = torch.load(
-            results_dir / 'checkpoints' / f'{args.property}_best.pt',
-            map_location=device,
-            weights_only=False
-        )
-        norm_params = property_ckpt.get('normalization_params', {'mean': 0.0, 'std': 1.0})
 
     # Create class-guided designer
     designer = GraphClassGuidedDesigner(

@@ -127,6 +127,14 @@ def main(args):
     norm_params = {'mean': 0.0, 'std': 1.0}
     if args.property:
         print(f"\n5. Loading property predictor for {args.property}...")
+
+        # Load checkpoint first to get hyperparameters
+        property_ckpt = torch.load(
+            results_dir / 'checkpoints' / f'{args.property}_best.pt',
+            map_location=device
+        )
+        norm_params = property_ckpt.get('normalization_params', {'mean': 0.0, 'std': 1.0})
+
         step3_config_path = results_dir / f'step3_{args.property}' / 'config_used.yaml'
         trained_config = config
         if step3_config_path.exists():
@@ -134,11 +142,19 @@ def main(args):
             if trained_config.get('property_head') != config.get('property_head'):
                 print(f"Using property head settings from {step3_config_path} to match checkpoint.")
 
+        # Get hyperparameters from checkpoint (if tuned) or config
         head_config = trained_config.get('property_head', config['property_head'])
+        if 'hidden_sizes' in property_ckpt and property_ckpt['hidden_sizes'] is not None:
+            hidden_sizes = property_ckpt['hidden_sizes']
+            dropout = property_ckpt.get('dropout', head_config['dropout'])
+        else:
+            hidden_sizes = head_config['hidden_sizes']
+            dropout = head_config['dropout']
+
         property_head = PropertyHead(
             input_size=backbone_config['hidden_size'],
-            hidden_sizes=head_config['hidden_sizes'],
-            dropout=head_config['dropout']
+            hidden_sizes=hidden_sizes,
+            dropout=dropout
         )
 
         default_timestep = trained_config.get('training_property', {}).get(
@@ -155,13 +171,6 @@ def main(args):
         property_predictor.load_property_head(results_dir / 'checkpoints' / f'{args.property}_best.pt')
         property_predictor = property_predictor.to(device)
         property_predictor.eval()
-
-        # Load normalization parameters
-        property_ckpt = torch.load(
-            results_dir / 'checkpoints' / f'{args.property}_best.pt',
-            map_location=device
-        )
-        norm_params = property_ckpt.get('normalization_params', {'mean': 0.0, 'std': 1.0})
 
     # Create class-guided designer
     designer = ClassGuidedDesigner(

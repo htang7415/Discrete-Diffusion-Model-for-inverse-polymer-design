@@ -47,16 +47,13 @@ def run_step(script_name: str, model_size: str, extra_args: str = "") -> tuple:
 
 def check_backbone_checkpoint(results_dir: Path) -> bool:
     """Check if backbone checkpoint exists."""
-    checkpoint_dir = results_dir / 'step1_backbone' / 'checkpoints'
-    if not checkpoint_dir.exists():
-        return False
-    # Check for any .pt files
-    return any(checkpoint_dir.glob('*.pt'))
+    checkpoint_path = results_dir / 'step1_backbone' / 'checkpoints' / 'backbone_best.pt'
+    return checkpoint_path.exists()
 
 
 def check_property_head_checkpoint(results_dir: Path, property_name: str) -> bool:
     """Check if property head checkpoint exists."""
-    checkpoint_path = results_dir / f'step3_{property_name}' / 'checkpoints' / f'{property_name}_head_best.pt'
+    checkpoint_path = results_dir / 'checkpoints' / f'{property_name}_best.pt'
     return checkpoint_path.exists()
 
 
@@ -127,7 +124,7 @@ def extract_step5_metrics(results_dir: Path, polymer_class: str) -> dict:
     """Extract metrics from step 5 (class design)."""
     metrics = {}
     import pandas as pd
-    metrics_file = results_dir / f'step5_{polymer_class}' / 'metrics' / f'{polymer_class}_design.csv'
+    metrics_file = results_dir / f'step5_{polymer_class}' / 'metrics' / f'{polymer_class}_class_design.csv'
     if metrics_file.exists():
         df = pd.read_csv(metrics_file)
         if len(df) > 0:
@@ -141,7 +138,7 @@ def extract_step6_metrics(results_dir: Path, polymer_class: str, property_name: 
     """Extract metrics from step 6 (class-property joint design)."""
     metrics = {}
     import pandas as pd
-    metrics_file = results_dir / f'step6_{polymer_class}_{property_name}' / 'metrics' / f'{polymer_class}_{property_name}_design.csv'
+    metrics_file = results_dir / f'step5_{polymer_class}_{property_name}' / 'metrics' / f'{polymer_class}_{property_name}_joint_design.csv'
     if metrics_file.exists():
         df = pd.read_csv(metrics_file)
         if len(df) > 0:
@@ -324,6 +321,13 @@ def main():
 
     # Step 6: Class-property joint design
     if not args.skip_step6:
+        # Check dependency: backbone checkpoint must exist
+        if not check_backbone_checkpoint(results_dir):
+            print(f"ERROR: Backbone checkpoint not found in {results_dir}/step1_backbone/checkpoints/")
+            print("Run step 1 first or ensure checkpoint exists.")
+            logger.log_error('step6_joint_design', 'Missing backbone checkpoint')
+            logger.finalize()
+            return 1
         # Check dependency: property head checkpoint must exist
         if not check_property_head_checkpoint(results_dir, args.property):
             print(f"ERROR: Property head checkpoint not found for '{args.property}'")

@@ -1,25 +1,25 @@
 {
-  "model_size": "medium",
-  "experiment_start": "2026-01-01T17:39:17.712967",
+  "model_size": "small",
+  "experiment_start": "2026-01-02T11:37:05.963608",
   "model_config": {
-    "hidden_size": 640,
-    "num_layers": 10,
-    "num_heads": 10,
-    "ffn_hidden_size": 2560,
+    "hidden_size": 384,
+    "num_layers": 6,
+    "num_heads": 6,
+    "ffn_hidden_size": 1536,
     "dropout": 0.1,
     "max_position_embeddings": 256
   },
   "training_config": {
-    "max_steps": 200000,
-    "warmup_steps": 2000,
+    "max_steps": 500000,
+    "warmup_steps": 1000,
     "batch_size": 256,
     "gradient_accumulation_steps": 4,
     "learning_rate": 0.0003
   },
-  "num_parameters": 49379200,
+  "num_parameters": 10747008,
   "steps": {
     "step1_backbone": {
-      "start_time": "2026-01-01T17:39:17.713455",
+      "start_time": "2026-01-02T11:37:05.963979",
       "status": "running",
       "end_time": null,
       "duration_seconds": null,

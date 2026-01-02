@@ -53,7 +53,12 @@ class PropertyTrainer:
         device: str = 'cuda',
         output_dir: str = 'results',
         normalization_params: Optional[Dict] = None,
-        step_dir: str = None
+        step_dir: str = None,
+        # Hyperparameter tuning results (for checkpoint saving)
+        hidden_sizes: Optional[list] = None,
+        finetune_last_layers: Optional[int] = None,
+        head_dropout: Optional[float] = None,
+        best_hyperparams: Optional[Dict] = None
     ):
         """Initialize trainer.
 
@@ -79,6 +84,12 @@ class PropertyTrainer:
         self.output_dir = Path(output_dir)
         self.step_dir = Path(step_dir) if step_dir else self.output_dir
         self.normalization_params = normalization_params or {'mean': 0.0, 'std': 1.0}
+
+        # Store hyperparameter tuning results for checkpoint saving
+        self.hidden_sizes = hidden_sizes
+        self.finetune_last_layers = finetune_last_layers
+        self.head_dropout = head_dropout
+        self.best_hyperparams = best_hyperparams
 
         # Create output directories
         self.checkpoint_dir = self.output_dir / 'checkpoints'
@@ -340,7 +351,12 @@ class PropertyTrainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
             'val_loss': val_loss,
             'best_val_loss': self.best_val_loss,
-            'normalization_params': self.normalization_params
+            'normalization_params': self.normalization_params,
+            # Hyperparameter tuning results (for downstream steps)
+            'hidden_sizes': self.hidden_sizes,
+            'finetune_last_layers': self.finetune_last_layers,
+            'dropout': self.head_dropout,
+            'best_hyperparams': self.best_hyperparams
         }
 
         improved = False

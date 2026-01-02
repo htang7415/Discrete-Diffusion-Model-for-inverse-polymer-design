@@ -16,6 +16,42 @@ diffusion:
   beta_max: 0.95
   beta_min: 0.05
   num_steps: 50
+hyperparameter_tuning:
+  enabled: true
+  metric: r2
+  n_trials: 50
+  search_space:
+    batch_size:
+    - 8
+    - 16
+    - 32
+    - 64
+    - 128
+    dropout:
+    - 0.1
+    - 0.2
+    - 0.3
+    finetune_last_layers:
+    - 2
+    - 4
+    - 6
+    learning_rate:
+    - 0.0004
+    - 0.0006
+    - 0.0008
+    - 0.001
+    neurons:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    num_layers:
+    - 3
+    - 4
+    - 5
+  tuning_epochs: 50
+  tuning_patience: 10
 inverse_design:
   epsilon: 30.0
   num_candidates: 10000
@@ -28,7 +64,7 @@ model_sizes:
     hidden_size: 960
     learning_rate: 0.0001
     max_position_embeddings: 256
-    max_steps: 300000
+    max_steps: 500000
     num_heads: 12
     num_layers: 14
     warmup_steps: 3000
@@ -40,7 +76,7 @@ model_sizes:
     hidden_size: 640
     learning_rate: 0.0003
     max_position_embeddings: 256
-    max_steps: 200000
+    max_steps: 500000
     num_heads: 10
     num_layers: 10
     warmup_steps: 2000
@@ -52,7 +88,7 @@ model_sizes:
     hidden_size: 384
     learning_rate: 0.0003
     max_position_embeddings: 256
-    max_steps: 200000
+    max_steps: 500000
     num_heads: 6
     num_layers: 6
     warmup_steps: 1000
@@ -64,7 +100,7 @@ model_sizes:
     hidden_size: 1280
     learning_rate: 0.0001
     max_position_embeddings: 256
-    max_steps: 400000
+    max_steps: 500000
     num_heads: 16
     num_layers: 20
     warmup_steps: 4000

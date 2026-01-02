@@ -1,11 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=selfies_scaling
-#SBATCH --output=logs/scaling_%x_%j.out
-#SBATCH --error=logs/scaling_%x_%j.err
-#SBATCH --mail-type=ALL
+#SBATCH --job-name=sel_s
+#SBATCH --output=logs/sel_s_%x_%j.out
+#SBATCH --error=logs/sel_s_%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=256G
+#SBATCH --mem=512G
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks-per-node=1
 #SBATCH --partition=pdelab

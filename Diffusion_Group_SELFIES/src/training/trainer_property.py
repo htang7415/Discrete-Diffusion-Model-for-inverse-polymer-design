@@ -45,7 +45,12 @@ class PropertyTrainer:
         device: str = 'cuda',
         output_dir: str = 'results',
         normalization_params: Optional[Dict] = None,
-        step_dir: str = None
+        step_dir: str = None,
+        # Additional parameters for hyperparameter tuning
+        hidden_sizes: Optional[list] = None,
+        finetune_last_layers: Optional[int] = None,
+        head_dropout: Optional[float] = None,
+        best_hyperparams: Optional[Dict] = None
     ):
         """Initialize trainer.
 
@@ -60,6 +65,10 @@ class PropertyTrainer:
             output_dir: Output directory for shared artifacts (checkpoints).
             normalization_params: Normalization parameters (mean, std).
             step_dir: Step-specific output directory for metrics/figures.
+            hidden_sizes: Property head hidden layer sizes (for checkpoint saving).
+            finetune_last_layers: Number of backbone layers to finetune.
+            head_dropout: Property head dropout rate.
+            best_hyperparams: Best hyperparameters from Optuna tuning (if any).
         """
         self.model = model.to(device)
         self.train_dataloader = train_dataloader
@@ -71,6 +80,12 @@ class PropertyTrainer:
         self.output_dir = Path(output_dir)
         self.step_dir = Path(step_dir) if step_dir else self.output_dir
         self.normalization_params = normalization_params or {'mean': 0.0, 'std': 1.0}
+
+        # Store hyperparameters for checkpoint saving
+        self.hidden_sizes = hidden_sizes or config.get('property_head', {}).get('hidden_sizes', [256, 1024, 128])
+        self.finetune_last_layers = finetune_last_layers or config.get('training_property', {}).get('finetune_last_layers', 6)
+        self.head_dropout = head_dropout or config.get('property_head', {}).get('dropout', 0.1)
+        self.best_hyperparams = best_hyperparams
 
         # Create output directories
         self.checkpoint_dir = self.output_dir / 'checkpoints'
@@ -331,7 +346,12 @@ class PropertyTrainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
             'val_loss': val_loss,
             'best_val_loss': self.best_val_loss,
-            'normalization_params': self.normalization_params
+            'normalization_params': self.normalization_params,
+            # Property head hyperparameters (for downstream Step 4, 5, 6)
+            'hidden_sizes': self.hidden_sizes,
+            'finetune_last_layers': self.finetune_last_layers,
+            'dropout': self.head_dropout,
+            'best_hyperparams': self.best_hyperparams
         }
 
         improved = False

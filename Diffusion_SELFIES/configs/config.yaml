@@ -64,7 +64,7 @@ model_sizes:
     dropout: 0.1
     max_position_embeddings: 256
     # Training
-    max_steps: 200000
+    max_steps: 500000
     warmup_steps: 1000
     batch_size: 256
     gradient_accumulation_steps: 4
@@ -78,7 +78,7 @@ model_sizes:
     dropout: 0.1
     max_position_embeddings: 256
     # Training
-    max_steps: 200000
+    max_steps: 500000
     warmup_steps: 2000
     batch_size: 256
     gradient_accumulation_steps: 4
@@ -92,7 +92,7 @@ model_sizes:
     dropout: 0.1
     max_position_embeddings: 256
     # Training
-    max_steps: 300000
+    max_steps: 500000
     warmup_steps: 3000
     batch_size: 128
     gradient_accumulation_steps: 8
@@ -106,7 +106,7 @@ model_sizes:
     dropout: 0.1
     max_position_embeddings: 256
     # Training
-    max_steps: 400000
+    max_steps: 500000
     warmup_steps: 4000
     batch_size: 64
     gradient_accumulation_steps: 16
@@ -157,6 +157,26 @@ optimization:
 property_head:
   hidden_sizes: [256, 1024, 128]
   dropout: 0.1
+
+# Hyperparameter tuning for property head (Step 3) using Optuna
+hyperparameter_tuning:
+  enabled: true                    # Enable via config or --tune flag
+  n_trials: 50                      # Number of Optuna trials
+  tuning_epochs: 50                 # Max epochs per trial
+  tuning_patience: 10               # Early stopping patience per trial
+  metric: "r2"                      # Optimization metric: maximize R² on validation
+
+  # Search space
+  search_space:
+    # Property head architecture: 3-5 layers, neurons from [64, 128, 256, 512, 1024]
+    num_layers: [3, 4, 5]
+    neurons: [64, 128, 256, 512, 1024]
+
+    # Training hyperparameters
+    learning_rate: [4.0e-4, 6.0e-4, 8.0e-4, 1.0e-3]
+    dropout: [0.1, 0.2, 0.3]
+    finetune_last_layers: [2, 4, 6]
+    batch_size: [8, 16, 32, 64, 128]  # 2^3 to 2^7
 
 # Sampling
 sampling:
