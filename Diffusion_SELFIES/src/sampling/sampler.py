@@ -8,15 +8,10 @@ from tqdm import tqdm
 
 
 class ConstrainedSampler:
-    """Constrained sampler ensuring exactly two '[I+3]' placeholder tokens in generated polymers.
+    """Sampler for SELFIES polymer generation with optional constraints.
 
-    Implements reverse diffusion with constraints:
-    - During sampling: limits '[I+3]' placeholder tokens to at most 2
-    - At final step: ensures exactly 2 '[I+3]' tokens
-
-    Note: SELFIES grammar is valid by construction, so we don't need parenthesis
-    balancing, ring closure pairing, or bond placement constraints that were
-    required for p-SMILES. This simplifies the sampler significantly.
+    When use_constraints is True, enforces exactly two '[I+3]' placeholder tokens.
+    Special tokens are always forbidden at MASK positions.
     """
 
     def __init__(
@@ -25,6 +20,7 @@ class ConstrainedSampler:
         tokenizer,
         num_steps: int = 100,
         temperature: float = 1.0,
+        use_constraints: bool = True,
         device: str = 'cuda'
     ):
         """Initialize sampler.
@@ -34,12 +30,14 @@ class ConstrainedSampler:
             tokenizer: SelfiesTokenizer instance.
             num_steps: Number of diffusion steps.
             temperature: Sampling temperature.
+            use_constraints: Whether to apply chemistry constraints during sampling.
             device: Device for computation.
         """
         self.diffusion_model = diffusion_model
         self.tokenizer = tokenizer
         self.num_steps = num_steps
         self.temperature = temperature
+        self.use_constraints = use_constraints
         self.device = device
 
         # Get special token IDs
@@ -278,9 +276,10 @@ class ConstrainedSampler:
             # Apply temperature
             logits = logits / self.temperature
 
-            # Apply placeholder constraint (max 2 [I+3] tokens)
-            # This is the ONLY constraint needed for SELFIES!
-            logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
+            if self.use_constraints:
+                # Apply placeholder constraint (max 2 [I+3] tokens)
+                # This is the ONLY constraint needed for SELFIES!
+                logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
 
             # Forbid special tokens at masked positions
             is_masked = ids == self.mask_id
@@ -347,17 +346,18 @@ class ConstrainedSampler:
                         # No need to process remaining positions for this sequence
                         break
 
-                    # If we sampled a placeholder, update constraint for remaining positions
-                    if sampled_token == self.placeholder_id:
-                        # Count current placeholders (excluding remaining MASK positions)
-                        non_mask = ids[i] != self.mask_id
-                        current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
+                    if self.use_constraints:
+                        # If we sampled a placeholder, update constraint for remaining positions
+                        if sampled_token == self.placeholder_id:
+                            # Count current placeholders (excluding remaining MASK positions)
+                            non_mask = ids[i] != self.mask_id
+                            current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
 
-                        # If we've reached the limit, forbid placeholders at remaining masked positions
-                        if current_placeholders >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            logits[i, remaining_mask, self.placeholder_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                            # If we've reached the limit, forbid placeholders at remaining masked positions
+                            if current_placeholders >= 2:
+                                remaining_mask = ids[i] == self.mask_id
+                                logits[i, remaining_mask, self.placeholder_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
             # Store logits for final step
             if t == 1:
@@ -380,8 +380,9 @@ class ConstrainedSampler:
                             attention_mask[i, last_pos + 2:] = 0
                 has_eos[i] = True
 
-        # Fix placeholder count in final sequences (ensure exactly 2)
-        ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
+        if self.use_constraints:
+            # Fix placeholder count in final sequences (ensure exactly 2)
+            ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
 
         # Decode to SELFIES
         selfies_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
@@ -600,9 +601,10 @@ class ConstrainedSampler:
 
             logits = logits / self.temperature
 
-            # Apply placeholder constraint (max 2 [I+3] tokens)
-            # This is the ONLY constraint needed for SELFIES!
-            logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
+            if self.use_constraints:
+                # Apply placeholder constraint (max 2 [I+3] tokens)
+                # This is the ONLY constraint needed for SELFIES!
+                logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
 
             # Forbid special tokens at masked positions
             is_masked = (ids == self.mask_id) & (~fixed_mask)
@@ -665,17 +667,18 @@ class ConstrainedSampler:
                         self._update_eos_termination(ids, attention_mask, i, pos.item())
                         break
 
-                    # If we sampled a placeholder, update constraint for remaining positions
-                    if sampled_token == self.placeholder_id:
-                        # Count current placeholders (excluding remaining MASK positions)
-                        non_mask = ids[i] != self.mask_id
-                        current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
+                    if self.use_constraints:
+                        # If we sampled a placeholder, update constraint for remaining positions
+                        if sampled_token == self.placeholder_id:
+                            # Count current placeholders (excluding remaining MASK positions)
+                            non_mask = ids[i] != self.mask_id
+                            current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
 
-                        # If we've reached the limit, forbid placeholders at remaining masked positions
-                        if current_placeholders >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            logits[i, remaining_mask, self.placeholder_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                            # If we've reached the limit, forbid placeholders at remaining masked positions
+                            if current_placeholders >= 2:
+                                remaining_mask = ids[i] == self.mask_id
+                                logits[i, remaining_mask, self.placeholder_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
             if t == 1:
                 final_logits = logits
@@ -696,8 +699,9 @@ class ConstrainedSampler:
                                 attention_mask[i, last_pos + 2:] = 0
                     has_eos[i] = True
 
-        # Fix placeholder count in final sequences (ensure exactly 2)
-        ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
+        if self.use_constraints:
+            # Fix placeholder count in final sequences (ensure exactly 2)
+            ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
 
         # Decode to SELFIES
         selfies_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)

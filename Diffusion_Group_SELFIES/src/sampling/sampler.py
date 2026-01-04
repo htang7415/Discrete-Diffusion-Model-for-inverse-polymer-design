@@ -11,16 +11,10 @@ from ..utils.chemistry import count_stars, check_validity
 
 
 class ConstrainedSampler:
-    """Constrained sampler for Group SELFIES polymer generation.
+    """Sampler for Group SELFIES polymer generation with optional constraints.
 
-    Group SELFIES grammar inherently ensures valid molecular structures, so
-    most SMILES-specific syntax constraints (parentheses, rings, bonds) are
-    not needed. The main constraint is ensuring exactly 2 placeholder tokens
-    (representing polymer connection points '*').
-
-    Implements reverse diffusion with constraints:
-    - During sampling: limits placeholder tokens to at most 2
-    - At final step: ensures exactly 2 placeholder tokens
+    When use_constraints is True, enforces exactly two placeholder tokens.
+    Special tokens are always forbidden at MASK positions.
     """
 
     def __init__(
@@ -29,6 +23,7 @@ class ConstrainedSampler:
         tokenizer,
         num_steps: int = 100,
         temperature: float = 1.0,
+        use_constraints: bool = True,
         device: str = 'cuda'
     ):
         """Initialize sampler.
@@ -38,12 +33,14 @@ class ConstrainedSampler:
             tokenizer: GroupSELFIESTokenizer instance.
             num_steps: Number of diffusion steps.
             temperature: Sampling temperature.
+            use_constraints: Whether to apply chemistry constraints during sampling.
             device: Device for computation.
         """
         self.diffusion_model = diffusion_model
         self.tokenizer = tokenizer
         self.num_steps = num_steps
         self.temperature = temperature
+        self.use_constraints = use_constraints
         self.device = device
 
         # Get special token IDs
@@ -337,8 +334,9 @@ class ConstrainedSampler:
             # Apply temperature
             logits = logits / self.temperature
 
-            # Apply placeholder constraint (limit to 2)
-            logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
+            if self.use_constraints:
+                # Apply placeholder constraint (limit to 2)
+                logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
 
             # Apply special token constraints
             logits = self._apply_special_token_constraints(logits, ids)
@@ -371,27 +369,29 @@ class ConstrainedSampler:
                     # Update constraints dynamically based on what was just sampled
                     sampled_token = sampled.item()
 
-                    # If we sampled ANY placeholder-bearing token, update constraint
-                    if sampled_token in self.placeholder_contributions:
-                        # Count current total placeholders using contribution map
-                        non_mask = ids[i] != self.mask_id
-                        current_total = 0
-                        for token_id, contribution in self.placeholder_contributions.items():
-                            current_total += ((ids[i] == token_id) & non_mask).sum().item() * contribution
+                    if self.use_constraints:
+                        # If we sampled ANY placeholder-bearing token, update constraint
+                        if sampled_token in self.placeholder_contributions:
+                            # Count current total placeholders using contribution map
+                            non_mask = ids[i] != self.mask_id
+                            current_total = 0
+                            for token_id, contribution in self.placeholder_contributions.items():
+                                current_total += ((ids[i] == token_id) & non_mask).sum().item() * contribution
 
-                        # If we've reached the limit, forbid ALL placeholder tokens at remaining positions
-                        if current_total >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            for token_id in self.placeholder_contributions:
-                                logits[i, remaining_mask, token_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                            # If we've reached the limit, forbid ALL placeholder tokens at remaining positions
+                            if current_total >= 2:
+                                remaining_mask = ids[i] == self.mask_id
+                                for token_id in self.placeholder_contributions:
+                                    logits[i, remaining_mask, token_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
             # Store logits for final step
             if t == 1:
                 final_logits = logits
 
-        # Fix placeholder count in final sequences
-        ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
+        if self.use_constraints:
+            # Fix placeholder count in final sequences
+            ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
 
         # Decode to SMILES (Group SELFIES tokenizer decodes to p-SMILES)
         smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
@@ -624,7 +624,8 @@ class ConstrainedSampler:
                 logits = backbone(ids, timesteps, attention_mask)
 
             logits = logits / self.temperature
-            logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
+            if self.use_constraints:
+                logits = self._apply_placeholder_constraint(logits, ids, max_placeholders=2)
             logits = self._apply_special_token_constraints(logits, ids)
 
             probs = F.softmax(logits, dim=-1)
@@ -647,19 +648,21 @@ class ConstrainedSampler:
 
                     sampled_token = sampled.item()
 
-                    if sampled_token == self.placeholder_id:
-                        non_mask = ids[i] != self.mask_id
-                        current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
+                    if self.use_constraints:
+                        if sampled_token == self.placeholder_id:
+                            non_mask = ids[i] != self.mask_id
+                            current_placeholders = ((ids[i] == self.placeholder_id) & non_mask).sum().item()
 
-                        if current_placeholders >= 2:
-                            remaining_mask = ids[i] == self.mask_id
-                            logits[i, remaining_mask, self.placeholder_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                            if current_placeholders >= 2:
+                                remaining_mask = ids[i] == self.mask_id
+                                logits[i, remaining_mask, self.placeholder_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
             if t == 1:
                 final_logits = logits
 
-        ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
+        if self.use_constraints:
+            ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
         smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
 
         return ids, smiles_list

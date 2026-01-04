@@ -141,7 +141,7 @@ optimization:
   compile_model: true              # torch.compile()
   compile_mode: default            # torch.compile() mode; avoid cudagraph issues
   gradient_accumulation_steps: 4   # Effective batch = 256 * 4 = 1024
-  num_workers: 2                   # DataLoader workers
+  num_workers: 0                   # DataLoader workers
   pin_memory: false                # GPU memory pinning
   cudnn_benchmark: true            # cuDNN autotuning
   prefetch_factor: 1               # DataLoader prefetching
@@ -177,6 +177,7 @@ sampling:
   num_samples: 20000
   batch_size: 256
   temperature: 1.0
+  use_constraints: true
 
 # Inverse design
 inverse_design:

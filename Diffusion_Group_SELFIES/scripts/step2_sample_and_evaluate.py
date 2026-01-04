@@ -112,6 +112,7 @@ def main(args):
         tokenizer=tokenizer,
         num_steps=config['diffusion']['num_steps'],
         temperature=config['sampling']['temperature'],
+        use_constraints=config['sampling'].get('use_constraints', True),
         device=device
     )
 

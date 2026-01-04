@@ -140,7 +140,8 @@ def main(args):
         graph_tokenizer=graph_tokenizer,
         num_steps=diffusion_config['num_steps'],
         device=device,
-        atom_count_distribution=graph_config.get('atom_count_distribution')
+        atom_count_distribution=graph_config.get('atom_count_distribution'),
+        use_constraints=config['sampling'].get('use_constraints', True)
     )
 
     # Sample

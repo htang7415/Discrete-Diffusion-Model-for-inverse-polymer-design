@@ -8,11 +8,10 @@ from tqdm import tqdm
 
 
 class ConstrainedSampler:
-    """Constrained sampler ensuring exactly two '*' tokens in generated polymers.
+    """Sampler for polymer generation with optional constraints.
 
-    Implements reverse diffusion with constraints:
-    - During sampling: limits '*' tokens to at most 2
-    - At final step: ensures exactly 2 '*' tokens
+    When use_constraints is True, enforces SMILES syntax constraints and
+    exactly two '*' tokens. Special tokens are always forbidden at MASK positions.
     """
 
     def __init__(
@@ -21,6 +20,7 @@ class ConstrainedSampler:
         tokenizer,
         num_steps: int = 100,
         temperature: float = 1.0,
+        use_constraints: bool = True,
         device: str = 'cuda'
     ):
         """Initialize sampler.
@@ -30,12 +30,14 @@ class ConstrainedSampler:
             tokenizer: Tokenizer instance.
             num_steps: Number of diffusion steps.
             temperature: Sampling temperature.
+            use_constraints: Whether to apply chemistry constraints during sampling.
             device: Device for computation.
         """
         self.diffusion_model = diffusion_model
         self.tokenizer = tokenizer
         self.num_steps = num_steps
         self.temperature = temperature
+        self.use_constraints = use_constraints
         self.device = device
 
         # Get special token IDs
@@ -166,6 +168,18 @@ class ConstrainedSampler:
         forbidden.add(self.eos_id)
 
         return forbidden
+
+    def _apply_special_token_constraints(
+        self,
+        logits: torch.Tensor,
+        current_ids: torch.Tensor
+    ) -> torch.Tensor:
+        """Forbid special tokens from being sampled at MASK positions."""
+        is_masked = current_ids == self.mask_id
+        for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
+            if tok >= 0:
+                logits[:, :, tok].masked_fill_(is_masked, float('-inf'))
+        return logits
 
     def _apply_syntax_constraints(
         self,
@@ -619,10 +633,12 @@ class ConstrainedSampler:
                 logits = backbone(ids, timesteps, attention_mask)
 
             logits = logits / self.temperature
-            logits = self._apply_star_constraint(logits, ids, max_stars=2)
-            logits = self._apply_position_aware_paren_constraints(logits, ids)
-            logits = self._apply_ring_constraints(logits, ids)
-            logits = self._apply_bond_placement_constraints(logits, ids)
+            if self.use_constraints:
+                logits = self._apply_star_constraint(logits, ids, max_stars=2)
+                logits = self._apply_position_aware_paren_constraints(logits, ids)
+                logits = self._apply_ring_constraints(logits, ids)
+                logits = self._apply_bond_placement_constraints(logits, ids)
+            logits = self._apply_special_token_constraints(logits, ids)
 
             probs = F.softmax(logits, dim=-1)
             is_masked = (ids == self.mask_id) & (~fixed_mask)
@@ -644,34 +660,36 @@ class ConstrainedSampler:
 
                     sampled_token = sampled.item()
 
-                    if sampled_token == self.star_id:
-                        non_mask = ids[i] != self.mask_id
-                        current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
+                    if self.use_constraints:
+                        if sampled_token == self.star_id:
+                            non_mask = ids[i] != self.mask_id
+                            current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
 
-                        if current_stars >= 2:
-                            remaining_mask = (ids[i] == self.mask_id) & (~fixed_mask[i])
-                            logits[i, remaining_mask, self.star_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                            if current_stars >= 2:
+                                remaining_mask = (ids[i] == self.mask_id) & (~fixed_mask[i])
+                                logits[i, remaining_mask, self.star_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
-                    elif sampled_token in self.bond_ids:
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            for bond_id in self.bond_ids:
-                                logits[i, next_pos, bond_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                        elif sampled_token in self.bond_ids:
+                            next_pos = pos + 1
+                            if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                                for bond_id in self.bond_ids:
+                                    logits[i, next_pos, bond_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
-                    elif sampled_token == self.open_paren_id:
-                        next_pos = pos + 1
-                        if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                            logits[i, next_pos, self.close_paren_id] = float('-inf')
-                            probs[i] = F.softmax(logits[i], dim=-1)
+                        elif sampled_token == self.open_paren_id:
+                            next_pos = pos + 1
+                            if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
+                                logits[i, next_pos, self.close_paren_id] = float('-inf')
+                                probs[i] = F.softmax(logits[i], dim=-1)
 
             if t == 1:
                 final_logits = logits
 
-        ids = self._fix_star_count(ids, final_logits, target_stars=2)
-        ids = self._fix_paren_balance(ids, final_logits)
-        ids = self._fix_ring_closures(ids, final_logits)
+        if self.use_constraints:
+            ids = self._fix_star_count(ids, final_logits, target_stars=2)
+            ids = self._fix_paren_balance(ids, final_logits)
+            ids = self._fix_ring_closures(ids, final_logits)
         smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
 
         return ids, smiles_list

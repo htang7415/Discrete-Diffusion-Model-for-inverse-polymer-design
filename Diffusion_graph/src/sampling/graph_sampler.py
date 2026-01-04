@@ -1,10 +1,11 @@
-"""Graph Sampler with hard constraints for polymer generation.
+"""Graph Sampler with optional constraints for polymer generation.
 
-Implements reverse diffusion sampling with:
+Implements reverse diffusion sampling with optional constraints (when enabled):
 - Exactly 2 star (*) attachment points
 - Star bond constraints (no star-star, only SINGLE allowed)
 - Star degree = 1 constraint
-- Edge symmetry enforcement
+- Valence/connectivity checks
+Edge symmetry and edge-mask handling are always enforced.
 """
 
 import torch
@@ -16,11 +17,7 @@ from tqdm import tqdm
 
 
 class GraphSampler:
-    """Constrained sampler for graph diffusion.
-
-    Applies hard constraints during reverse diffusion to ensure
-    valid polymer structures with exactly 2 attachment points.
-    """
+    """Sampler for graph diffusion with optional chemistry constraints."""
 
     def __init__(
         self,
@@ -34,7 +31,8 @@ class GraphSampler:
         edge_single_id: int = 1,
         edge_mask_id: int = 5,
         device: str = 'cuda',
-        atom_count_distribution: Optional[Dict[int, int]] = None
+        atom_count_distribution: Optional[Dict[int, int]] = None,
+        use_constraints: bool = True
     ):
         """Initialize GraphSampler.
 
@@ -49,11 +47,13 @@ class GraphSampler:
             edge_single_id: ID of SINGLE in edge vocab.
             edge_mask_id: ID of MASK in edge vocab.
             device: Device for sampling.
+            use_constraints: Whether to apply chemistry constraints during sampling.
         """
         self.backbone = backbone
         self.tokenizer = graph_tokenizer
         self.num_steps = num_steps
         self.device = device
+        self.use_constraints = use_constraints
 
         # Get token IDs from tokenizer if not provided
         self.star_id = star_id if star_id is not None else graph_tokenizer.star_id
@@ -640,10 +640,11 @@ class GraphSampler:
             edge_logits = edge_logits / temperature
 
             # Apply constraints
-            node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+            if self.use_constraints:
+                node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+                edge_logits = self._apply_edge_constraints(edge_logits, X, M)
+                edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
             node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
-            edge_logits = self._apply_edge_constraints(edge_logits, X, M)
-            edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
             edge_logits[:, :, :, self.edge_mask_id][valid_edge_mask] = -float('inf')
 
             # Enforce symmetry in edge logits
@@ -666,7 +667,7 @@ class GraphSampler:
                     sampled_nodes = torch.multinomial(masked_probs, 1).squeeze(-1)
                     X[b, select] = sampled_nodes
 
-            if is_final:
+            if is_final and self.use_constraints:
                 X = self._fix_star_count(X, M, node_logits)
                 edge_logits = self._apply_edge_constraints(edge_logits, X, M)
                 edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
@@ -696,7 +697,7 @@ class GraphSampler:
             E = self._enforce_edge_symmetry(E)
 
             # Post-process at final step
-            if is_final:
+            if is_final and self.use_constraints:
                 E = self._enforce_star_degree(E, X, M, edge_logits)
                 E = self._enforce_connectivity(E, X, M, edge_logits)
                 E = self._enforce_connectivity(E, X, M, edge_logits)
@@ -817,10 +818,11 @@ class GraphSampler:
             node_logits = node_logits / temperature
             edge_logits = edge_logits / temperature
 
-            node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+            if self.use_constraints:
+                node_logits = self._apply_star_constraints(node_logits, X, M, is_final)
+                edge_logits = self._apply_edge_constraints(edge_logits, X, M)
+                edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
             node_logits = self._apply_node_special_token_constraints(node_logits, X, M)
-            edge_logits = self._apply_edge_constraints(edge_logits, X, M)
-            edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
             edge_logits[:, :, :, self.edge_mask_id][valid_edge_mask] = -float('inf')
             edge_logits = (edge_logits + edge_logits.transpose(1, 2)) / 2
 
@@ -840,7 +842,7 @@ class GraphSampler:
                     sampled_nodes = torch.multinomial(masked_probs, 1).squeeze(-1)
                     X[b, select] = sampled_nodes
 
-            if is_final:
+            if is_final and self.use_constraints:
                 X = self._fix_star_count(X, M, node_logits)
                 edge_logits = self._apply_edge_constraints(edge_logits, X, M)
                 edge_logits = self._apply_valence_constraints(edge_logits, X, E, M)
@@ -867,7 +869,7 @@ class GraphSampler:
 
             E = self._enforce_edge_symmetry(E)
 
-            if is_final:
+            if is_final and self.use_constraints:
                 E = self._enforce_star_degree(E, X, M, edge_logits)
 
         # Decode
@@ -917,6 +919,8 @@ def create_graph_sampler(
     diffusion_config = {}
     if config is not None:
         diffusion_config = config.get('diffusion', config.get('graph_diffusion', {}))
+    sampling_config = config.get('sampling', {}) if config is not None else {}
+    use_constraints = sampling_config.get('use_constraints', True)
 
     atom_count_distribution = None
     if graph_config is not None:
@@ -927,5 +931,6 @@ def create_graph_sampler(
         graph_tokenizer=graph_tokenizer,
         num_steps=diffusion_config.get('num_steps', 100),
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        atom_count_distribution=atom_count_distribution
+        atom_count_distribution=atom_count_distribution,
+        use_constraints=use_constraints
     )
