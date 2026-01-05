@@ -1,0 +1,89 @@
+{
+  "model_size": "small",
+  "experiment_start": "2026-01-04T11:08:58.886939",
+  "model_config": {
+    "hidden_size": 384,
+    "num_layers": 6,
+    "num_heads": 6,
+    "ffn_hidden_size": 1536,
+    "dropout": 0.1,
+    "max_position_embeddings": 256
+  },
+  "training_config": {
+    "max_steps": 50000,
+    "warmup_steps": 1000,
+    "batch_size": 128,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 0.0003
+  },
+  "num_parameters": 10747008,
+  "steps": {
+    "step1_backbone": {
+      "start_time": "2026-01-04T11:08:58.887194",
+      "status": "completed",
+      "end_time": "2026-01-04T14:38:40.110512",
+      "duration_seconds": 12581.223318,
+      "metrics": {}
+    },
+    "step2_sampling": {
+      "start_time": "2026-01-04T14:38:40.111619",
+      "status": "completed",
+      "end_time": "2026-01-04T15:30:57.619315",
+      "duration_seconds": 3137.507696,
+      "metrics": {
+        "validity": 1.0,
+        "uniqueness": 1.0,
+        "novelty": 0.912,
+        "diversity": 0.8738
+      }
+    },
+    "step3_property": {
+      "start_time": "2026-01-04T15:30:57.619689",
+      "status": "completed",
+      "end_time": "2026-01-04T17:22:04.525218",
+      "duration_seconds": 6666.905529,
+      "metrics": {
+        "test_mae": 27.6329,
+        "test_rmse": 37.9558,
+        "test_r2": 0.8754
+      }
+    },
+    "step4_inverse_design": {
+      "start_time": "2026-01-04T17:22:04.526412",
+      "status": "completed",
+      "end_time": "2026-01-04T18:14:30.623522",
+      "duration_seconds": 3146.09711,
+      "metrics": {}
+    },
+    "step5_class_design": {
+      "start_time": "2026-01-04T18:14:30.624450",
+      "status": "completed",
+      "end_time": "2026-01-04T19:05:48.406677",
+      "duration_seconds": 3077.782227,
+      "metrics": {
+        "class_hit_rate": null,
+        "class_valid_rate": null
+      }
+    },
+    "step6_joint_design": {
+      "start_time": "2026-01-04T19:05:48.407735",
+      "status": "completed",
+      "end_time": "2026-01-04T20:21:56.538610",
+      "duration_seconds": 4568.130875,
+      "metrics": {
+        "joint_hit_rate": null,
+        "class_hit_rate": null,
+        "property_hit_rate": null,
+        "valid_rate": null
+      }
+    }
+  },
+  "experiment_end": "2026-01-04T20:21:56.539632",
+  "total_duration_seconds": 33177.652693,
+  "summary": {
+    "total_steps": 6,
+    "completed_steps": 6,
+    "failed_steps": 0,
+    "success": true
+  }
+}

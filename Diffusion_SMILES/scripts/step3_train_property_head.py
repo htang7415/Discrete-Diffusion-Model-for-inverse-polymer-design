@@ -86,7 +86,7 @@ def compute_val_r2(model, val_loader, device, normalization_params):
                 predictions = model(input_ids, attention_mask)
 
             # Denormalize predictions and labels
-            preds = predictions.squeeze().cpu().numpy() * std + mean
+            preds = predictions.squeeze().float().cpu().numpy() * std + mean
             labs = labels.cpu().numpy() * std + mean
 
             all_preds.extend(preds.tolist() if hasattr(preds, 'tolist') else [preds])
