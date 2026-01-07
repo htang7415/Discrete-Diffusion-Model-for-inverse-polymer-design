@@ -169,7 +169,7 @@ sampling:
   num_samples: 20000
   batch_size: 256
   temperature: 1.0
-  use_constraints: true
+  use_constraints: false
 
 # Inverse design
 inverse_design:
