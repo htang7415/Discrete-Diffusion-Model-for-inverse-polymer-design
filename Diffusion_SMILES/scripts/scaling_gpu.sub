@@ -34,7 +34,7 @@ request_gpus   = 1
 request_cpus   = 16
 request_memory = 256GB
 request_disk   = 50GB
-requirements   = (TARGET.CUDACapability >= 7.0)
+requirements   = (TARGET.CUDACapability >= 8.0) && (TARGET.GPUMemoryMb >= 20000)
 
 # File transfer (enables more HTC nodes)
 should_transfer_files   = YES
