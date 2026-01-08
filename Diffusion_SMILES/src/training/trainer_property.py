@@ -39,6 +39,19 @@ def _is_cuda_device(device) -> bool:
         return str(device).startswith('cuda')
 
 
+def _supports_torch_compile(device) -> bool:
+    """Return True if torch.compile can safely run on the current GPU."""
+    if not _is_cuda_device(device) or not torch.cuda.is_available():
+        return False
+    try:
+        dev = torch.device(device)
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        major, _minor = torch.cuda.get_device_capability(index)
+    except Exception:
+        return False
+    return major >= 7
+
+
 class PropertyTrainer:
     """Trainer for property prediction heads."""
 
@@ -111,10 +124,14 @@ class PropertyTrainer:
         # Mixed precision scaler
         self.scaler = GradScaler(enabled=self.use_amp)
 
-        # Compile model for faster execution
+        # Compile model for faster execution (guard against older GPUs)
         if self.compile_model and _is_cuda_device(device):
-            print(f"Compiling model with torch.compile(mode='{self.compile_mode}')...")
-            self.model = torch.compile(self.model, mode=self.compile_mode)
+            if not _supports_torch_compile(device):
+                warnings.warn("torch.compile disabled: GPU compute capability < 7.0")
+                self.compile_model = False
+            else:
+                print(f"Compiling model with torch.compile(mode='{self.compile_mode}')...")
+                self.model = torch.compile(self.model, mode=self.compile_mode)
 
         # Training config
         train_config = config['training_property']

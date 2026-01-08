@@ -11,8 +11,28 @@ echo "Working Directory: $(pwd)"
 METHOD="Diffusion_SMILES"
 
 # Conda setup (HTC path - must be accessible on execute nodes)
-source /home/htang228/miniconda3/etc/profile.d/conda.sh
-conda activate llm
+DEFAULT_CONDA_ROOT="/home/htang228/miniconda3"
+if [ ! -d "${DEFAULT_CONDA_ROOT}" ] && [ -d /home/htang228/anaconda3 ]; then
+  DEFAULT_CONDA_ROOT="/home/htang228/anaconda3"
+fi
+CONDA_ENV="${CONDA_ENV_DIR:-${DEFAULT_CONDA_ROOT}/envs/llm}"
+CONDA_SH="${DEFAULT_CONDA_ROOT}/etc/profile.d/conda.sh"
+if [ -n "${CONDA_ENV_DIR:-}" ]; then
+  if [ -x "${CONDA_ENV}/bin/python" ]; then
+    export PATH="${CONDA_ENV}/bin:${PATH}"
+  else
+    echo "ERROR: packed conda env missing python at ${CONDA_ENV}/bin/python" >&2
+    exit 1
+  fi
+elif [ -f "${CONDA_SH}" ]; then
+  source "${CONDA_SH}"
+  conda activate "${CONDA_ENV}"
+elif [ -x "${CONDA_ENV}/bin/python" ]; then
+  export PATH="${CONDA_ENV}/bin:${PATH}"
+else
+  echo "ERROR: conda env not found at ${CONDA_ENV}" >&2
+  exit 1
+fi
 
 echo "Python: $(which python)"
 python -V

@@ -31,6 +31,27 @@ def _to_int(value, name: str) -> int:
         raise ValueError(f"{name} must be integer-like, got {value!r} ({type(value).__name__})")
 
 
+def _is_cuda_device(device) -> bool:
+    """Return True if the provided device resolves to CUDA."""
+    try:
+        return torch.device(device).type == 'cuda'
+    except (TypeError, ValueError):
+        return str(device).startswith('cuda')
+
+
+def _supports_torch_compile(device) -> bool:
+    """Return True if torch.compile can safely run on the current GPU."""
+    if not _is_cuda_device(device) or not torch.cuda.is_available():
+        return False
+    try:
+        dev = torch.device(device)
+        index = dev.index if dev.index is not None else torch.cuda.current_device()
+        major, _minor = torch.cuda.get_device_capability(index)
+    except Exception:
+        return False
+    return major >= 7
+
+
 class GraphPropertyTrainer:
     """Trainer for graph-based property prediction heads."""
 
@@ -91,7 +112,7 @@ class GraphPropertyTrainer:
 
         # Optimization config
         opt_config = config.get('optimization', {})
-        self.use_amp = opt_config.get('use_amp', False) and device == 'cuda'
+        self.use_amp = opt_config.get('use_amp', False) and _is_cuda_device(device)
         self.compile_model = opt_config.get('compile_model', False)
         self.grad_accum_steps = opt_config.get('gradient_accumulation_steps', 1)
 
@@ -102,10 +123,14 @@ class GraphPropertyTrainer:
         # Mixed precision scaler
         self.scaler = GradScaler(enabled=self.use_amp)
 
-        # Compile model for faster execution
-        if self.compile_model and device == 'cuda':
-            print("Compiling model with torch.compile()...")
-            self.model = torch.compile(self.model, mode="reduce-overhead")
+        # Compile model for faster execution (guard against older GPUs)
+        if self.compile_model and _is_cuda_device(device):
+            if not _supports_torch_compile(device):
+                warnings.warn("torch.compile disabled: GPU compute capability < 7.0")
+                self.compile_model = False
+            else:
+                print("Compiling model with torch.compile()...")
+                self.model = torch.compile(self.model, mode="reduce-overhead")
 
         # Training config
         train_config = config['training_property']
@@ -137,7 +162,7 @@ class GraphPropertyTrainer:
 
     def _maybe_mark_cudagraph_step_begin(self) -> None:
         """Mark the beginning of a cudagraph step if supported."""
-        if not self.compile_model or self.device != 'cuda':
+        if not self.compile_model or not _is_cuda_device(self.device):
             return
 
         compiler_mod = getattr(torch, "compiler", None)

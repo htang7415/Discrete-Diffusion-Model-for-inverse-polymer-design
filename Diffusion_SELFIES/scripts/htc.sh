@@ -22,6 +22,8 @@ echo "Creating tarball..."
 mkdir -p /home/htang228/logs
 cd "$BASE_PATH"
 tar --exclude='results_*' -czf "/home/htang228/${METHOD}.tar.gz" "${METHOD}/"
+cp "${BASE_PATH}/scripts/condor_wrapper.sh" /home/htang228/condor_wrapper.sh
+chmod +x /home/htang228/condor_wrapper.sh
 
 # 2. Submit job
 echo "Submitting job..."
