@@ -59,6 +59,8 @@ def main(args):
 
     # Get model config
     backbone_config = get_model_config(args.model_size, config, model_type='graph')
+    if args.model_size:
+        config['backbone'] = {**config.get('backbone', {}), **backbone_config}
 
     # Load graph config
     print("\n1. Loading graph config and tokenizer...")
