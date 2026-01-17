@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Step 1: Train diffusion backbone model."""
+"""Step 1: Train autoregressive backbone model."""
 
 import os
 import sys
@@ -23,7 +23,7 @@ from src.utils.model_scales import (
 from src.data.tokenizer import PSmilesTokenizer
 from src.data.dataset import PolymerDataset, collate_fn
 from src.model.backbone import DiffusionBackbone
-from src.model.diffusion import DiscreteMaskingDiffusion
+from src.model.autoregressive import AutoregressiveLM
 from src.training.trainer_backbone import BackboneTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
 
@@ -78,7 +78,7 @@ def main(args):
 
     if is_main_process:
         print("=" * 50)
-        print("Step 1: Training Diffusion Backbone")
+        print("Step 1: Training Autoregressive Backbone")
         print("=" * 50)
 
     # Get model and training config based on model_size
@@ -174,15 +174,9 @@ def main(args):
         pad_token_id=tokenizer.pad_token_id
     )
 
-    model = DiscreteMaskingDiffusion(
+    model = AutoregressiveLM(
         backbone=backbone,
-        num_steps=config['diffusion']['num_steps'],
-        beta_min=config['diffusion']['beta_min'],
-        beta_max=config['diffusion']['beta_max'],
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.pad_token_id
     )
 
     # Count parameters
@@ -252,7 +246,7 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train diffusion backbone')
+    parser = argparse.ArgumentParser(description='Train autoregressive backbone')
     parser.add_argument('--config', type=str, default='configs/config.yaml',
                         help='Path to config file')
     parser.add_argument('--model_size', type=str, default=None,

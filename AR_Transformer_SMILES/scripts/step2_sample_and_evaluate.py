@@ -19,7 +19,7 @@ from src.utils.chemistry import compute_sa_score
 from src.utils.model_scales import get_model_config, get_results_dir
 from src.data.tokenizer import PSmilesTokenizer
 from src.model.backbone import DiffusionBackbone
-from src.model.diffusion import DiscreteMaskingDiffusion
+from src.model.autoregressive import AutoregressiveLM
 from src.sampling.sampler import ConstrainedSampler
 from src.evaluation.generative_metrics import GenerativeEvaluator
 from src.utils.reproducibility import seed_everything, save_run_metadata
@@ -91,15 +91,9 @@ def main(args):
         pad_token_id=tokenizer.pad_token_id
     )
 
-    model = DiscreteMaskingDiffusion(
+    model = AutoregressiveLM(
         backbone=backbone,
-        num_steps=config['diffusion']['num_steps'],
-        beta_min=config['diffusion']['beta_min'],
-        beta_max=config['diffusion']['beta_max'],
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.pad_token_id
     )
 
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
@@ -118,7 +112,10 @@ def main(args):
         num_steps=config['diffusion']['num_steps'],
         temperature=config['sampling']['temperature'],
         use_constraints=config['sampling'].get('use_constraints', True),
-        device=device
+        device=device,
+        top_k=config['sampling'].get('top_k', 0),
+        top_p=config['sampling'].get('top_p', 1.0),
+        max_length=config['sampling'].get('max_length')
     )
 
     # Sample

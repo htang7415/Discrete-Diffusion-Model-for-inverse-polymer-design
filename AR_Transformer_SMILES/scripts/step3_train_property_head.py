@@ -28,7 +28,6 @@ from src.data.tokenizer import PSmilesTokenizer
 from src.data.data_loader import PolymerDataLoader
 from src.data.dataset import PropertyDataset, collate_fn
 from src.model.backbone import DiffusionBackbone
-from src.model.diffusion import DiscreteMaskingDiffusion
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.training.trainer_property import PropertyTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
@@ -331,23 +330,18 @@ def main(args):
         pad_token_id=tokenizer.pad_token_id
     )
 
-    # Load backbone weights from diffusion model
-    diffusion_model = DiscreteMaskingDiffusion(
-        backbone=backbone,
-        num_steps=config['diffusion']['num_steps'],
-        beta_min=config['diffusion']['beta_min'],
-        beta_max=config['diffusion']['beta_max'],
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id
-    )
+    # Load backbone weights from autoregressive checkpoint
     # Handle torch.compile() state dict (keys have _orig_mod. prefix)
     state_dict = checkpoint['model_state_dict']
     if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-    diffusion_model.load_state_dict(state_dict)
-    backbone = diffusion_model.backbone
+    if any(k.startswith('backbone.') for k in state_dict.keys()):
+        state_dict = {
+            k.replace('backbone.', ''): v
+            for k, v in state_dict.items()
+            if k.startswith('backbone.')
+        }
+    backbone.load_state_dict(state_dict)
 
     # Save backbone state dict for hyperparameter tuning
     backbone_state_dict = copy.deepcopy(backbone.state_dict())

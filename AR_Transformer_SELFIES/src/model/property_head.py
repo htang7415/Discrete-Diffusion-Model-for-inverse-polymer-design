@@ -89,7 +89,7 @@ class PropertyPredictor(nn.Module):
             freeze_backbone: Whether to freeze backbone weights.
             finetune_last_layers: Number of last layers to finetune (if freeze_backbone=True).
             pooling: Pooling method ('mean', 'cls', 'max').
-            default_timestep: Default timestep for backbone (0 = no masking).
+            default_timestep: Unused (kept for backward compatibility).
         """
         super().__init__()
 
@@ -123,21 +123,14 @@ class PropertyPredictor(nn.Module):
         Args:
             input_ids: Token IDs of shape [batch, seq_len].
             attention_mask: Attention mask.
-            timesteps: Timesteps (uses default if None).
+            timesteps: Unused (kept for backward compatibility).
 
         Returns:
             Predictions of shape [batch, 1].
         """
-        batch_size = input_ids.shape[0]
-        device = input_ids.device
-
-        # Use default timestep if not provided
-        if timesteps is None:
-            timesteps = torch.full((batch_size,), self.default_timestep, device=device, dtype=torch.long)
-
         # Get pooled output from backbone
         pooled = self.backbone.get_pooled_output(
-            input_ids, timesteps, attention_mask, self.pooling
+            input_ids, attention_mask, self.pooling
         )
 
         # Predict property

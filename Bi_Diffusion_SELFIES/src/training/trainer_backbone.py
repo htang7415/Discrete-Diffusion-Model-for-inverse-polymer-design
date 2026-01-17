@@ -268,6 +268,10 @@ class BackboneTrainer:
             # Save checkpoint
             self._save_checkpoint(val_loss, epoch)
 
+            # Barrier after checkpoint to prevent rank drift
+            if self.distributed and dist.is_available() and dist.is_initialized():
+                dist.barrier()
+
             if self.is_main_process:
                 print(f"Epoch {epoch+1}/{self.num_epochs} - "
                       f"Train Loss: {train_loss:.4f} - "
@@ -351,6 +355,10 @@ class BackboneTrainer:
                         })
 
             self.global_step += 1
+
+        # Barrier before final reduce to ensure all ranks exit loop together
+        if self.distributed and dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
         avg_loss = total_loss / max(num_batches, 1)
         return self._reduce_mean(avg_loss)

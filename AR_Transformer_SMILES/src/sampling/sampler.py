@@ -21,17 +21,23 @@ class ConstrainedSampler:
         num_steps: int = 100,
         temperature: float = 1.0,
         use_constraints: bool = True,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        top_k: int = 0,
+        top_p: float = 1.0,
+        max_length: Optional[int] = None
     ):
         """Initialize sampler.
 
         Args:
-            diffusion_model: Trained discrete masking diffusion model.
+            diffusion_model: Trained autoregressive model wrapper.
             tokenizer: Tokenizer instance.
-            num_steps: Number of diffusion steps.
+            num_steps: Unused (kept for backward compatibility).
             temperature: Sampling temperature.
             use_constraints: Whether to apply chemistry constraints during sampling.
             device: Device for computation.
+            top_k: Top-k sampling (0 disables).
+            top_p: Top-p (nucleus) sampling (1.0 disables).
+            max_length: Optional max sequence length for generation.
         """
         self.diffusion_model = diffusion_model
         self.tokenizer = tokenizer
@@ -39,6 +45,9 @@ class ConstrainedSampler:
         self.temperature = temperature
         self.use_constraints = use_constraints
         self.device = device
+        self.top_k = top_k
+        self.top_p = top_p
+        self.max_length = max_length
 
         # Get special token IDs
         self.mask_id = tokenizer.mask_token_id
@@ -179,6 +188,65 @@ class ConstrainedSampler:
         for tok in [self.mask_id, self.pad_id, self.bos_id, self.eos_id]:
             if tok >= 0:
                 logits[:, :, tok].masked_fill_(is_masked, float('-inf'))
+        return logits
+
+    def _adapt_ar_logits_for_constraints(
+        self,
+        ar_logits: torch.Tensor,
+        prefix_ids: torch.Tensor,
+        max_length: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Adapt AR next-token logits to diffusion-style format for constraint reuse."""
+        batch_size, prefix_len = prefix_ids.shape
+        vocab_size = ar_logits.shape[-1]
+
+        full_ids = torch.full(
+            (batch_size, max_length),
+            self.mask_id,
+            dtype=prefix_ids.dtype,
+            device=prefix_ids.device
+        )
+        full_ids[:, :prefix_len] = prefix_ids
+
+        full_logits = torch.zeros(
+            (batch_size, max_length, vocab_size),
+            dtype=ar_logits.dtype,
+            device=ar_logits.device
+        )
+        full_logits[:, prefix_len, :] = ar_logits
+
+        return full_ids, full_logits
+
+    def _filter_logits_top_k_top_p(
+        self,
+        logits: torch.Tensor,
+        top_k: int = 0,
+        top_p: float = 1.0
+    ) -> torch.Tensor:
+        """Apply top-k and/or top-p filtering to logits."""
+        if top_k is not None and top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            values, _ = torch.topk(logits, top_k)
+            min_values = values[:, -1].unsqueeze(-1)
+            logits = torch.where(
+                logits < min_values,
+                torch.full_like(logits, float('-inf')),
+                logits
+            )
+
+        if top_p is not None and top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+            sorted_indices_to_remove[:, 0] = False
+
+            indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+            indices_to_remove.scatter_(1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(indices_to_remove, float('-inf'))
+
         return logits
 
     def _apply_syntax_constraints(
@@ -606,7 +674,7 @@ class ConstrainedSampler:
         fixed_mask: torch.Tensor,
         show_progress: bool = True
     ) -> Tuple[torch.Tensor, List[str]]:
-        """Run reverse diffusion sampling starting from provided token IDs.
+        """Run left-to-right autoregressive sampling starting from provided token IDs.
 
         Args:
             ids: Initial token IDs of shape [batch, seq_len].
@@ -619,79 +687,96 @@ class ConstrainedSampler:
         """
         self.diffusion_model.eval()
         backbone = self.diffusion_model.backbone
-        batch_size = ids.shape[0]
+        batch_size, max_length = ids.shape
 
         final_logits = None
-        steps = range(self.num_steps, 0, -1)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+
+        steps = range(1, max_length)
         if show_progress:
             steps = tqdm(steps, desc="Sampling")
 
-        for t in steps:
-            timesteps = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
+        for pos in steps:
+            if finished.all():
+                break
+
+            pos_fixed = fixed_mask[:, pos] if fixed_mask is not None else torch.zeros_like(finished)
+            sample_mask = (~pos_fixed) & (~finished)
+
+            prefix_ids = ids[:, :pos]
+            prefix_mask = torch.ones_like(prefix_ids)
 
             with torch.no_grad():
-                logits = backbone(ids, timesteps, attention_mask)
+                logits = backbone(prefix_ids, prefix_mask)[:, -1, :]
 
             logits = logits / self.temperature
+            raw_logits = logits.clone()
+
+            full_ids, full_logits = self._adapt_ar_logits_for_constraints(
+                logits, prefix_ids, max_length
+            )
+
             if self.use_constraints:
-                logits = self._apply_star_constraint(logits, ids, max_stars=2)
-                logits = self._apply_position_aware_paren_constraints(logits, ids)
-                logits = self._apply_ring_constraints(logits, ids)
-                logits = self._apply_bond_placement_constraints(logits, ids)
-            logits = self._apply_special_token_constraints(logits, ids)
+                full_logits = self._apply_star_constraint(full_logits, full_ids, max_stars=2)
+                full_logits = self._apply_position_aware_paren_constraints(full_logits, full_ids)
+                full_logits = self._apply_ring_constraints(full_logits, full_ids)
+                full_logits = self._apply_bond_placement_constraints(full_logits, full_ids)
+            full_logits = self._apply_special_token_constraints(full_logits, full_ids)
 
-            probs = F.softmax(logits, dim=-1)
-            is_masked = (ids == self.mask_id) & (~fixed_mask)
-            unmask_prob = 1.0 / t
+            logits = full_logits[:, pos, :]
 
-            for i in range(batch_size):
-                masked_pos = torch.where(is_masked[i])[0]
-                if len(masked_pos) == 0:
-                    continue
+            # Allow EOS only after star count is satisfied
+            star_count = self._count_stars(prefix_ids)
+            allow_eos = star_count >= 2
+            if self.eos_id >= 0:
+                eos_logits = raw_logits[:, self.eos_id]
+                logits[:, self.eos_id] = torch.where(
+                    allow_eos,
+                    eos_logits,
+                    torch.tensor(float('-inf'), device=logits.device, dtype=logits.dtype)
+                )
 
-                num_unmask = max(1, int(len(masked_pos) * unmask_prob))
-                unmask_indices = torch.randperm(len(masked_pos))[:num_unmask]
-                unmask_positions = masked_pos[unmask_indices]
+            next_tokens = ids[:, pos].clone()
 
-                # Sample tokens for these positions SEQUENTIALLY with constraint updates
-                for pos in unmask_positions:
-                    sampled = torch.multinomial(probs[i, pos], 1)
-                    ids[i, pos] = sampled
+            if sample_mask.any():
+                filtered = self._filter_logits_top_k_top_p(
+                    logits[sample_mask], self.top_k, self.top_p
+                )
 
-                    sampled_token = sampled.item()
+                all_inf = torch.isneginf(filtered).all(dim=-1)
+                if all_inf.any():
+                    filtered[all_inf] = 0.0
+                    for tok in [self.mask_id, self.pad_id, self.bos_id]:
+                        if tok >= 0:
+                            filtered[all_inf, tok] = float('-inf')
 
-                    if self.use_constraints:
-                        if sampled_token == self.star_id:
-                            non_mask = ids[i] != self.mask_id
-                            current_stars = ((ids[i] == self.star_id) & non_mask).sum().item()
+                probs = F.softmax(filtered, dim=-1)
+                sampled = torch.multinomial(probs, 1).squeeze(-1)
+                next_tokens[sample_mask] = sampled
 
-                            if current_stars >= 2:
-                                remaining_mask = (ids[i] == self.mask_id) & (~fixed_mask[i])
-                                logits[i, remaining_mask, self.star_id] = float('-inf')
-                                probs[i] = F.softmax(logits[i], dim=-1)
+            # Pad out finished sequences unless position is fixed
+            to_pad = finished & (~pos_fixed)
+            if to_pad.any() and self.pad_id >= 0:
+                next_tokens[to_pad] = self.pad_id
 
-                        elif sampled_token in self.bond_ids:
-                            next_pos = pos + 1
-                            if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                                for bond_id in self.bond_ids:
-                                    logits[i, next_pos, bond_id] = float('-inf')
-                                probs[i] = F.softmax(logits[i], dim=-1)
+            ids[:, pos] = next_tokens
 
-                        elif sampled_token == self.open_paren_id:
-                            next_pos = pos + 1
-                            if next_pos < len(ids[i]) and ids[i, next_pos] == self.mask_id:
-                                logits[i, next_pos, self.close_paren_id] = float('-inf')
-                                probs[i] = F.softmax(logits[i], dim=-1)
+            finished = finished | (next_tokens == self.eos_id)
 
-            if t == 1:
-                final_logits = logits
+            if final_logits is None:
+                final_logits = torch.zeros(
+                    (batch_size, max_length, logits.shape[-1]),
+                    dtype=logits.dtype,
+                    device=logits.device
+                )
+            final_logits[:, pos, :] = full_logits[:, pos, :]
 
-        if self.use_constraints:
+        if self.use_constraints and final_logits is not None:
             ids = self._fix_star_count(ids, final_logits, target_stars=2)
             ids = self._fix_paren_balance(ids, final_logits)
             ids = self._fix_ring_closures(ids, final_logits)
-        smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
 
+        smiles_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
         return ids, smiles_list
 
     def sample_with_lengths(

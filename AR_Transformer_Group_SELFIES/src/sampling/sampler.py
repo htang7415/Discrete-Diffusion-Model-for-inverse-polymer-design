@@ -24,17 +24,23 @@ class ConstrainedSampler:
         num_steps: int = 100,
         temperature: float = 1.0,
         use_constraints: bool = True,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        top_k: int = 0,
+        top_p: float = 1.0,
+        max_length: Optional[int] = None
     ):
         """Initialize sampler.
 
         Args:
-            diffusion_model: Trained discrete masking diffusion model.
+            diffusion_model: Trained autoregressive model wrapper.
             tokenizer: GroupSELFIESTokenizer instance.
-            num_steps: Number of diffusion steps.
+            num_steps: Unused (kept for backward compatibility).
             temperature: Sampling temperature.
             use_constraints: Whether to apply chemistry constraints during sampling.
             device: Device for computation.
+            top_k: Top-k sampling (0 disables).
+            top_p: Top-p (nucleus) sampling (1.0 disables).
+            max_length: Optional max sequence length for generation.
         """
         self.diffusion_model = diffusion_model
         self.tokenizer = tokenizer
@@ -42,6 +48,9 @@ class ConstrainedSampler:
         self.temperature = temperature
         self.use_constraints = use_constraints
         self.device = device
+        self.top_k = top_k
+        self.top_p = top_p
+        self.max_length = max_length
 
         # Get special token IDs
         self.mask_id = tokenizer.mask_token_id
@@ -215,6 +224,176 @@ class ConstrainedSampler:
 
         return logits
 
+    def _adapt_ar_logits_for_constraints(
+        self,
+        ar_logits: torch.Tensor,
+        prefix_ids: torch.Tensor,
+        max_length: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Adapt AR next-token logits to diffusion-style format for constraint reuse."""
+        batch_size, prefix_len = prefix_ids.shape
+        vocab_size = ar_logits.shape[-1]
+
+        full_ids = torch.full(
+            (batch_size, max_length),
+            self.mask_id,
+            dtype=prefix_ids.dtype,
+            device=prefix_ids.device
+        )
+        full_ids[:, :prefix_len] = prefix_ids
+
+        full_logits = torch.zeros(
+            (batch_size, max_length, vocab_size),
+            dtype=ar_logits.dtype,
+            device=ar_logits.device
+        )
+        full_logits[:, prefix_len, :] = ar_logits
+
+        return full_ids, full_logits
+
+    def _filter_logits_top_k_top_p(
+        self,
+        logits: torch.Tensor,
+        top_k: int = 0,
+        top_p: float = 1.0
+    ) -> torch.Tensor:
+        """Apply top-k and/or top-p filtering to logits."""
+        if top_k is not None and top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            values, _ = torch.topk(logits, top_k)
+            min_values = values[:, -1].unsqueeze(-1)
+            logits = torch.where(
+                logits < min_values,
+                torch.full_like(logits, float('-inf')),
+                logits
+            )
+
+        if top_p is not None and top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+            sorted_indices_to_remove[:, 0] = False
+
+            indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+            indices_to_remove.scatter_(1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(indices_to_remove, float('-inf'))
+
+        return logits
+
+    def _sample_from_ids(
+        self,
+        ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        show_progress: bool = True,
+        allow_natural_eos: bool = False
+    ) -> Tuple[torch.Tensor, List[str]]:
+        """Run left-to-right autoregressive sampling starting from provided token IDs."""
+        self.diffusion_model.eval()
+        backbone = self.diffusion_model.backbone
+        batch_size, max_length = ids.shape
+
+        final_logits = None
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+
+        steps = range(1, max_length)
+        if show_progress:
+            steps = tqdm(steps, desc="Sampling")
+
+        for pos in steps:
+            if finished.all():
+                break
+
+            pos_fixed = fixed_mask[:, pos] if fixed_mask is not None else torch.zeros_like(finished)
+            sample_mask = (~pos_fixed) & (~finished)
+
+            prefix_ids = ids[:, :pos]
+            prefix_mask = torch.ones_like(prefix_ids)
+
+            with torch.no_grad():
+                logits = backbone(prefix_ids, prefix_mask)[:, -1, :]
+
+            logits = logits / self.temperature
+            raw_logits = logits.clone()
+
+            full_ids, full_logits = self._adapt_ar_logits_for_constraints(
+                logits, prefix_ids, max_length
+            )
+
+            if self.use_constraints:
+                full_logits = self._apply_placeholder_constraint(full_logits, full_ids, max_placeholders=2)
+            full_logits = self._apply_special_token_constraints(full_logits, full_ids)
+
+            logits = full_logits[:, pos, :]
+
+            if self.eos_id >= 0:
+                if allow_natural_eos:
+                    placeholder_count = self._count_placeholders(prefix_ids)
+                    allow_eos = placeholder_count >= 2
+                    eos_logits = raw_logits[:, self.eos_id]
+                    logits[:, self.eos_id] = torch.where(
+                        allow_eos,
+                        eos_logits,
+                        torch.tensor(float('-inf'), device=logits.device, dtype=logits.dtype)
+                    )
+                else:
+                    logits[:, self.eos_id] = float('-inf')
+
+            next_tokens = ids[:, pos].clone()
+
+            if sample_mask.any():
+                filtered = self._filter_logits_top_k_top_p(
+                    logits[sample_mask], self.top_k, self.top_p
+                )
+
+                all_inf = torch.isneginf(filtered).all(dim=-1)
+                if all_inf.any():
+                    filtered[all_inf] = 0.0
+                    for tok in [self.mask_id, self.pad_id, self.bos_id]:
+                        if tok >= 0:
+                            filtered[all_inf, tok] = float('-inf')
+
+                probs = F.softmax(filtered, dim=-1)
+                sampled = torch.multinomial(probs, 1).squeeze(-1)
+                next_tokens[sample_mask] = sampled
+
+            to_pad = finished & (~pos_fixed)
+            if to_pad.any() and self.pad_id >= 0:
+                next_tokens[to_pad] = self.pad_id
+
+            ids[:, pos] = next_tokens
+            finished = finished | (next_tokens == self.eos_id)
+
+            if final_logits is None:
+                final_logits = torch.zeros(
+                    (batch_size, max_length, logits.shape[-1]),
+                    dtype=logits.dtype,
+                    device=logits.device
+                )
+            final_logits[:, pos, :] = full_logits[:, pos, :]
+
+        if allow_natural_eos and self.eos_id >= 0:
+            for i in range(batch_size):
+                if (ids[i] == self.eos_id).any():
+                    continue
+                non_pad = ids[i] != self.pad_id
+                if non_pad.any():
+                    last_pos = torch.where(non_pad)[0][-1].item()
+                else:
+                    last_pos = max_length - 1
+                ids[i, last_pos] = self.eos_id
+                if last_pos + 1 < max_length:
+                    ids[i, last_pos + 1:] = self.pad_id
+
+        if self.use_constraints and final_logits is not None:
+            ids = self._fix_placeholder_count(ids, final_logits, target_placeholders=2)
+
+        selfies_list = self.tokenizer.batch_decode(ids.cpu().tolist(), skip_special_tokens=True)
+        return ids, selfies_list
+
     def _fix_placeholder_count(
         self,
         ids: torch.Tensor,
@@ -301,6 +480,29 @@ class ConstrainedSampler:
         Returns:
             Tuple of (token_ids, smiles_strings).
         """
+        ids = torch.full(
+            (batch_size, seq_length),
+            self.mask_id,
+            dtype=torch.long,
+            device=self.device
+        )
+        ids[:, 0] = self.bos_id
+        ids[:, -1] = self.eos_id
+
+        attention_mask = torch.ones_like(ids)
+        fixed_mask = torch.zeros_like(ids, dtype=torch.bool)
+        fixed_mask[:, 0] = True
+        fixed_mask[:, -1] = True
+
+        return self._sample_from_ids(
+            ids=ids,
+            attention_mask=attention_mask,
+            fixed_mask=fixed_mask,
+            show_progress=show_progress,
+            allow_natural_eos=False
+        )
+
+        # Legacy diffusion sampler retained for reference.
         self.diffusion_model.eval()
         backbone = self.diffusion_model.backbone
 
@@ -582,6 +784,39 @@ class ConstrainedSampler:
         Returns:
             Tuple of (token_ids, smiles_strings).
         """
+        ids = torch.full(
+            (batch_size, seq_length),
+            self.mask_id,
+            dtype=torch.long,
+            device=self.device
+        )
+        ids[:, 0] = self.bos_id
+        ids[:, -1] = self.eos_id
+
+        fixed_mask = torch.zeros_like(ids, dtype=torch.bool)
+        fixed_mask[:, 0] = True
+        fixed_mask[:, -1] = True
+
+        if prefix_ids is not None:
+            prefix_len = prefix_ids.shape[1]
+            ids[:, 1:1+prefix_len] = prefix_ids
+            fixed_mask[:, 1:1+prefix_len] = True
+
+        if suffix_ids is not None:
+            suffix_len = suffix_ids.shape[1]
+            ids[:, -1-suffix_len:-1] = suffix_ids
+            fixed_mask[:, -1-suffix_len:-1] = True
+
+        attention_mask = torch.ones_like(ids)
+        return self._sample_from_ids(
+            ids=ids,
+            attention_mask=attention_mask,
+            fixed_mask=fixed_mask,
+            show_progress=show_progress,
+            allow_natural_eos=False
+        )
+
+        # Legacy diffusion sampler retained for reference.
         self.diffusion_model.eval()
         backbone = self.diffusion_model.backbone
 

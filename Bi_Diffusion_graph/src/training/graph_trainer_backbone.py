@@ -246,6 +246,10 @@ class GraphBackboneTrainer:
             # Save checkpoint
             self._save_checkpoint(val_loss, epoch)
 
+            # Barrier after checkpoint to prevent rank drift
+            if self.distributed and dist.is_available() and dist.is_initialized():
+                dist.barrier()
+
             if self.is_main_process:
                 print(f"Epoch {epoch+1}/{self.num_epochs} - "
                       f"Train Loss: {train_loss:.4f} (Node: {node_loss:.4f}, Edge: {edge_loss:.4f}) - "
@@ -334,6 +338,10 @@ class GraphBackboneTrainer:
                     dist.barrier()
 
             self.global_step += 1
+
+        # Barrier before final reduce to ensure all ranks exit loop together
+        if self.distributed and dist.is_available() and dist.is_initialized():
+            dist.barrier()
 
         avg_loss = total_loss / max(num_batches, 1)
         avg_node = total_node_loss / max(num_batches, 1)

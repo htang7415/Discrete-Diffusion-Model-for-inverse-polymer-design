@@ -3,10 +3,9 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --nodes=1
-#SBATCH --ntasks=4
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
-#SBATCH --cpus-per-task=16
 #SBATCH --partition=pdelab
 #SBATCH --gres=gpu:4
 #SBATCH --time=10-00:00:00
@@ -29,8 +28,8 @@ mkdir -p logs
 
 MODEL_SIZE=${1:-medium}
 
-MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
-MASTER_PORT=${MASTER_PORT:-29500}
-NPROC_PER_NODE=4
-
-srun --cpu-bind=cores torchrun   --nnodes=$SLURM_NNODES   --nproc_per_node=$NPROC_PER_NODE   --rdzv_backend=c10d   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT   scripts/step1_train_backbone.py --config configs/config.yaml --model_size "$MODEL_SIZE"
+# --standalone auto-selects free port, no MASTER_ADDR/MASTER_PORT needed
+torchrun \
+  --standalone \
+  --nproc_per_node=4 \
+  scripts/step1_train_backbone.py --config configs/config.yaml --model_size "$MODEL_SIZE"

@@ -19,7 +19,7 @@ from src.utils.chemistry import compute_sa_score
 from src.utils.model_scales import get_model_config, get_results_dir
 from src.data.tokenizer import PSmilesTokenizer
 from src.model.backbone import DiffusionBackbone
-from src.model.diffusion import DiscreteMaskingDiffusion
+from src.model.autoregressive import AutoregressiveLM
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.sampling.sampler import ConstrainedSampler
 from src.evaluation.inverse_design import InverseDesigner
@@ -72,8 +72,8 @@ def main(args):
     train_df = pd.read_csv(train_path)
     training_smiles = set(train_df['p_smiles'].tolist())
 
-    # Load diffusion model
-    print("\n3. Loading diffusion model...")
+    # Load backbone model
+    print("\n3. Loading backbone model...")
     # Get backbone config based on model_size
     backbone_config = get_model_config(args.model_size, config, model_type='sequence')
     backbone = DiffusionBackbone(
@@ -88,15 +88,9 @@ def main(args):
         pad_token_id=tokenizer.pad_token_id
     )
 
-    diffusion_model = DiscreteMaskingDiffusion(
+    model = AutoregressiveLM(
         backbone=backbone,
-        num_steps=config['diffusion']['num_steps'],
-        beta_min=config['diffusion']['beta_min'],
-        beta_max=config['diffusion']['beta_max'],
-        mask_token_id=tokenizer.mask_token_id,
-        pad_token_id=tokenizer.pad_token_id,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.pad_token_id
     )
 
     backbone_ckpt = torch.load(results_dir / 'step1_backbone' / 'checkpoints' / 'backbone_best.pt', map_location=device, weights_only=False)
@@ -104,18 +98,24 @@ def main(args):
     state_dict = backbone_ckpt['model_state_dict']
     if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
         state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-    diffusion_model.load_state_dict(state_dict)
-    diffusion_model = diffusion_model.to(device)
-    diffusion_model.eval()
+    if any(k.startswith('backbone.') for k in state_dict.keys()):
+        model.load_state_dict(state_dict)
+    else:
+        model.backbone.load_state_dict(state_dict)
+    model = model.to(device)
+    model.eval()
 
     # Create sampler
     sampler = ConstrainedSampler(
-        diffusion_model=diffusion_model,
+        diffusion_model=model,
         tokenizer=tokenizer,
         num_steps=config['diffusion']['num_steps'],
         temperature=config['sampling']['temperature'],
         use_constraints=config['sampling'].get('use_constraints', True),
-        device=device
+        device=device,
+        top_k=config['sampling'].get('top_k', 0),
+        top_p=config['sampling'].get('top_p', 1.0),
+        max_length=config['sampling'].get('max_length')
     )
 
     # Load property predictor
@@ -142,7 +142,7 @@ def main(args):
     )
 
     property_predictor = PropertyPredictor(
-        backbone=diffusion_model.backbone,
+        backbone=model.backbone,
         property_head=property_head,
         freeze_backbone=True,
         pooling='mean',

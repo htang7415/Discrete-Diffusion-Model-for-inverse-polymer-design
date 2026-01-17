@@ -1,4 +1,4 @@
-"""GPT-2-small-like Transformer backbone for diffusion model."""
+"""GPT-2-small-like Transformer backbone for autoregressive modeling."""
 
 import math
 import torch
@@ -8,13 +8,14 @@ from typing import Optional, Tuple
 
 
 class MultiHeadAttention(nn.Module):
-    """Multi-head self-attention with bidirectional attention."""
+    """Multi-head self-attention with optional causal masking."""
 
     def __init__(
         self,
         hidden_size: int,
         num_heads: int,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        causal: bool = False
     ):
         super().__init__()
         assert hidden_size % num_heads == 0
@@ -30,6 +31,7 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(hidden_size, hidden_size)
 
         self.dropout = nn.Dropout(dropout)
+        self.causal = causal
 
     def forward(
         self,
@@ -55,7 +57,15 @@ class MultiHeadAttention(nn.Module):
         # Compute attention scores
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
-        # Apply attention mask (bidirectional - mask padding only)
+        # Apply causal mask to prevent attention to future tokens
+        if self.causal:
+            causal_mask = torch.triu(
+                torch.ones(seq_len, seq_len, device=attn_scores.device, dtype=torch.bool),
+                diagonal=1
+            )
+            attn_scores = attn_scores.masked_fill(causal_mask, float('-inf'))
+
+        # Apply attention mask (mask padding only)
         if attention_mask is not None:
             # Expand mask: [batch, seq_len] -> [batch, 1, 1, seq_len]
             mask = attention_mask.unsqueeze(1).unsqueeze(2)
@@ -102,11 +112,12 @@ class TransformerBlock(nn.Module):
         hidden_size: int,
         num_heads: int,
         ffn_hidden_size: int,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        causal: bool = False
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size)
-        self.attn = MultiHeadAttention(hidden_size, num_heads, dropout)
+        self.attn = MultiHeadAttention(hidden_size, num_heads, dropout, causal=causal)
         self.norm2 = nn.LayerNorm(hidden_size)
         self.ffn = FeedForward(hidden_size, ffn_hidden_size, dropout)
 
@@ -123,13 +134,12 @@ class TransformerBlock(nn.Module):
 
 
 class DiffusionBackbone(nn.Module):
-    """GPT-2-small-like Transformer backbone for discrete masking diffusion.
+    """GPT-2-small-like Transformer backbone for autoregressive modeling.
 
     Architecture:
     - Learned token embeddings
     - Learned positional embeddings
-    - Learned timestep embeddings
-    - Stack of Transformer blocks with bidirectional attention
+    - Stack of Transformer blocks with causal attention
     - Final layer norm and output projection
     """
 
@@ -143,7 +153,8 @@ class DiffusionBackbone(nn.Module):
         max_position_embeddings: int = 256,
         num_diffusion_steps: int = 100,
         dropout: float = 0.1,
-        pad_token_id: int = 0
+        pad_token_id: int = 0,
+        causal: bool = True
     ):
         """Initialize backbone.
 
@@ -154,9 +165,10 @@ class DiffusionBackbone(nn.Module):
             num_heads: Number of attention heads.
             ffn_hidden_size: FFN intermediate dimension.
             max_position_embeddings: Maximum sequence length.
-            num_diffusion_steps: Number of diffusion timesteps.
+            num_diffusion_steps: Unused (kept for backward compatibility).
             dropout: Dropout rate.
             pad_token_id: ID of padding token.
+            causal: Whether to apply causal masking.
         """
         super().__init__()
 
@@ -164,17 +176,18 @@ class DiffusionBackbone(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.pad_token_id = pad_token_id
+        self.num_diffusion_steps = num_diffusion_steps
+        self.causal = causal
 
         # Embeddings
         self.token_embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=pad_token_id)
         self.position_embedding = nn.Embedding(max_position_embeddings, hidden_size)
-        self.timestep_embedding = nn.Embedding(num_diffusion_steps + 1, hidden_size)
 
         self.embedding_dropout = nn.Dropout(dropout)
 
         # Transformer blocks
         self.layers = nn.ModuleList([
-            TransformerBlock(hidden_size, num_heads, ffn_hidden_size, dropout)
+            TransformerBlock(hidden_size, num_heads, ffn_hidden_size, dropout, causal=causal)
             for _ in range(num_layers)
         ])
 
@@ -203,14 +216,12 @@ class DiffusionBackbone(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        timesteps: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Forward pass.
 
         Args:
             input_ids: Token IDs of shape [batch, seq_len].
-            timesteps: Diffusion timesteps of shape [batch] or [batch, 1].
             attention_mask: Attention mask of shape [batch, seq_len].
 
         Returns:
@@ -225,13 +236,8 @@ class DiffusionBackbone(nn.Module):
         positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
         pos_emb = self.position_embedding(positions)
 
-        # Timestep embeddings
-        if timesteps.dim() == 2:
-            timesteps = timesteps.squeeze(-1)
-        time_emb = self.timestep_embedding(timesteps).unsqueeze(1)  # [batch, 1, hidden]
-
         # Combine embeddings
-        x = token_emb + pos_emb + time_emb
+        x = token_emb + pos_emb
         x = self.embedding_dropout(x)
 
         # Transformer layers
@@ -247,7 +253,6 @@ class DiffusionBackbone(nn.Module):
     def get_hidden_states(
         self,
         input_ids: torch.Tensor,
-        timesteps: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         layer_idx: int = -1
     ) -> torch.Tensor:
@@ -255,7 +260,6 @@ class DiffusionBackbone(nn.Module):
 
         Args:
             input_ids: Token IDs of shape [batch, seq_len].
-            timesteps: Diffusion timesteps.
             attention_mask: Attention mask.
             layer_idx: Index of layer to get hidden states from (-1 for final).
 
@@ -269,11 +273,7 @@ class DiffusionBackbone(nn.Module):
         positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(batch_size, -1)
         pos_emb = self.position_embedding(positions)
 
-        if timesteps.dim() == 2:
-            timesteps = timesteps.squeeze(-1)
-        time_emb = self.timestep_embedding(timesteps).unsqueeze(1)
-
-        x = token_emb + pos_emb + time_emb
+        x = token_emb + pos_emb
         x = self.embedding_dropout(x)
 
         # Go through layers up to layer_idx
@@ -289,7 +289,6 @@ class DiffusionBackbone(nn.Module):
     def get_pooled_output(
         self,
         input_ids: torch.Tensor,
-        timesteps: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         pooling: str = 'mean'
     ) -> torch.Tensor:
@@ -297,14 +296,13 @@ class DiffusionBackbone(nn.Module):
 
         Args:
             input_ids: Token IDs.
-            timesteps: Diffusion timesteps.
             attention_mask: Attention mask.
             pooling: Pooling method ('mean', 'cls', 'max').
 
         Returns:
             Pooled representation of shape [batch, hidden_size].
         """
-        hidden_states = self.get_hidden_states(input_ids, timesteps, attention_mask)
+        hidden_states = self.get_hidden_states(input_ids, attention_mask)
 
         if pooling == 'mean':
             if attention_mask is not None:
@@ -334,7 +332,9 @@ class DiffusionBackbone(nn.Module):
                 'vocab_size': self.vocab_size,
                 'hidden_size': self.hidden_size,
                 'num_layers': self.num_layers,
-                'pad_token_id': self.pad_token_id
+                'pad_token_id': self.pad_token_id,
+                'num_diffusion_steps': self.num_diffusion_steps,
+                'causal': self.causal
             }
         }, path)
 

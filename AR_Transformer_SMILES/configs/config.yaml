@@ -178,6 +178,9 @@ sampling:
   batch_size: 256
   temperature: 1.0
   use_constraints: true
+  top_k: 0          # 0 disables top-k
+  top_p: 1.0        # 1.0 disables top-p
+  max_length: 128   # Max generation length for AR sampling
 
 # Inverse design
 inverse_design:

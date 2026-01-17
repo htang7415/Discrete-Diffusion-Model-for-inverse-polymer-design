@@ -194,6 +194,9 @@ sampling:
   batch_size: 256
   temperature: 1.0
   use_constraints: true
+  top_k: 50
+  top_p: 0.9
+  max_length: 128
 
 # Inverse design
 inverse_design:

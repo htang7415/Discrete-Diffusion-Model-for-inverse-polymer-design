@@ -137,7 +137,7 @@ class BackboneTuner:
             Final validation loss.
         """
         from ..model.backbone import DiffusionBackbone
-        from ..model.diffusion import DiscreteMaskingDiffusion
+        from ..model.autoregressive import AutoregressiveLM
 
         # Create proxy model (smaller)
         proxy_config = self.config['proxy_backbone']
@@ -153,15 +153,9 @@ class BackboneTuner:
             pad_token_id=self.tokenizer.pad_token_id
         )
 
-        model = DiscreteMaskingDiffusion(
+        model = AutoregressiveLM(
             backbone=backbone,
-            num_steps=self.config['diffusion']['num_steps'],
-            beta_min=self.config['diffusion']['beta_min'],
-            beta_max=self.config['diffusion']['beta_max'],
-            mask_token_id=self.tokenizer.mask_token_id,
-            pad_token_id=self.tokenizer.pad_token_id,
-            bos_token_id=self.tokenizer.bos_token_id,
-            eos_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self.tokenizer.pad_token_id
         ).to(self.device)
 
         # Optimizer
