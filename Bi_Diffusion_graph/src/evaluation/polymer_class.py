@@ -207,16 +207,24 @@ class ClassGuidedDesigner:
         )
 
         # Filter valid
+        n_total = len(all_smiles)
+        n_valid_any = 0
         valid_smiles = []
         for smiles in all_smiles:
-            if check_validity(smiles) and count_stars(smiles) == 2:
-                valid_smiles.append(smiles)
+            if check_validity(smiles):
+                n_valid_any += 1
+                if count_stars(smiles) == 2:
+                    valid_smiles.append(smiles)
+
+        n_valid_two_stars = len(valid_smiles)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if show_progress:
             print(f"Valid candidates: {len(valid_smiles)}")
 
         if len(valid_smiles) == 0:
-            return self._empty_class_results(target_class, num_candidates)
+            return self._empty_class_results(target_class, num_candidates, validity, validity_two_stars)
 
         # Filter by class
         class_matches = self.classifier.filter_by_class(valid_smiles, target_class)
@@ -228,6 +236,8 @@ class ClassGuidedDesigner:
         results = {
             "target_class": target_class,
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
             "class_success_rate": round(len(class_matches) / len(valid_smiles), 4) if valid_smiles else 0.0,
@@ -303,19 +313,27 @@ class ClassGuidedDesigner:
         )
 
         # Filter valid
+        n_total = len(all_smiles)
+        n_valid_any = 0
         valid_smiles = []
         for smiles in all_smiles:
-            if check_validity(smiles) and count_stars(smiles) == 2:
-                valid_smiles.append(smiles)
+            if check_validity(smiles):
+                n_valid_any += 1
+                if count_stars(smiles) == 2:
+                    valid_smiles.append(smiles)
+
+        n_valid_two_stars = len(valid_smiles)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if len(valid_smiles) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates)
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars)
 
         # Filter by class
         class_matches = self.classifier.filter_by_class(valid_smiles, target_class)
 
         if len(class_matches) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates,
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars,
                                              n_valid=len(valid_smiles))
 
         # Predict properties for class matches
@@ -332,6 +350,8 @@ class ClassGuidedDesigner:
             "target_value": round(target_value, 4),
             "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
             "n_joint_hits": len(joint_hits_smiles),
@@ -384,11 +404,13 @@ class ClassGuidedDesigner:
         predictions = predictions * self.normalization_params['std'] + self.normalization_params['mean']
         return predictions
 
-    def _empty_class_results(self, target_class: str, n_generated: int) -> Dict:
+    def _empty_class_results(self, target_class: str, n_generated: int, validity: float = 0.0, validity_two_stars: float = 0.0) -> Dict:
         """Return empty results for class design."""
         return {
             "target_class": target_class,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": 0,
             "n_class_matches": 0,
             "class_success_rate": 0.0,
@@ -412,6 +434,8 @@ class ClassGuidedDesigner:
         target_value: float,
         epsilon: float,
         n_generated: int,
+        validity: float = 0.0,
+        validity_two_stars: float = 0.0,
         n_valid: int = 0
     ) -> Dict:
         """Return empty results for joint design."""
@@ -420,6 +444,8 @@ class ClassGuidedDesigner:
             "target_value": target_value,
             "epsilon": epsilon,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": n_valid,
             "n_class_matches": 0,
             "n_joint_hits": 0,
@@ -500,16 +526,24 @@ class GraphClassGuidedDesigner:
         )
 
         # Filter valid
+        n_total = len(all_smiles)
+        n_valid_any = 0
         valid_smiles = []
         for smiles in all_smiles:
-            if smiles and check_validity(smiles) and count_stars(smiles) == 2:
-                valid_smiles.append(smiles)
+            if smiles and check_validity(smiles):
+                n_valid_any += 1
+                if count_stars(smiles) == 2:
+                    valid_smiles.append(smiles)
+
+        n_valid_two_stars = len(valid_smiles)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if show_progress:
             print(f"Valid candidates: {len(valid_smiles)}")
 
         if len(valid_smiles) == 0:
-            return self._empty_class_results(target_class, num_candidates)
+            return self._empty_class_results(target_class, num_candidates, validity, validity_two_stars)
 
         # Filter by class
         class_matches = self.classifier.filter_by_class(valid_smiles, target_class)
@@ -521,6 +555,8 @@ class GraphClassGuidedDesigner:
         results = {
             "target_class": target_class,
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
             "class_success_rate": round(len(class_matches) / len(valid_smiles), 4) if valid_smiles else 0.0,
@@ -596,19 +632,27 @@ class GraphClassGuidedDesigner:
         )
 
         # Filter valid
+        n_total = len(all_smiles)
+        n_valid_any = 0
         valid_smiles = []
         for smiles in all_smiles:
-            if smiles and check_validity(smiles) and count_stars(smiles) == 2:
-                valid_smiles.append(smiles)
+            if smiles and check_validity(smiles):
+                n_valid_any += 1
+                if count_stars(smiles) == 2:
+                    valid_smiles.append(smiles)
+
+        n_valid_two_stars = len(valid_smiles)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if len(valid_smiles) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates)
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars)
 
         # Filter by class
         class_matches = self.classifier.filter_by_class(valid_smiles, target_class)
 
         if len(class_matches) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates,
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars,
                                              n_valid=len(valid_smiles))
 
         # Predict properties for class matches
@@ -625,6 +669,8 @@ class GraphClassGuidedDesigner:
             "target_value": round(target_value, 4),
             "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_smiles),
             "n_class_matches": len(class_matches),
             "n_joint_hits": len(joint_hits_smiles),
@@ -694,11 +740,13 @@ class GraphClassGuidedDesigner:
         predictions = predictions * self.normalization_params['std'] + self.normalization_params['mean']
         return predictions
 
-    def _empty_class_results(self, target_class: str, n_generated: int) -> Dict:
+    def _empty_class_results(self, target_class: str, n_generated: int, validity: float = 0.0, validity_two_stars: float = 0.0) -> Dict:
         """Return empty results for class design."""
         return {
             "target_class": target_class,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": 0,
             "n_class_matches": 0,
             "class_success_rate": 0.0,
@@ -722,6 +770,8 @@ class GraphClassGuidedDesigner:
         target_value: float,
         epsilon: float,
         n_generated: int,
+        validity: float = 0.0,
+        validity_two_stars: float = 0.0,
         n_valid: int = 0
     ) -> Dict:
         """Return empty results for joint design."""
@@ -730,6 +780,8 @@ class GraphClassGuidedDesigner:
             "target_value": target_value,
             "epsilon": epsilon,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": n_valid,
             "n_class_matches": 0,
             "n_joint_hits": 0,

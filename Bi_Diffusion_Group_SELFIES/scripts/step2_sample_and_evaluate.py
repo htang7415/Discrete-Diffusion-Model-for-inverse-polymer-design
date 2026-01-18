@@ -157,6 +157,7 @@ def main(args):
     # Print metrics
     print("\nGenerative Metrics:")
     print(f"  Validity: {metrics['validity']:.4f}")
+    print(f"  Validity (star=2): {metrics['validity_two_stars']:.4f}")
     print(f"  Uniqueness: {metrics['uniqueness']:.4f}")
     print(f"  Novelty: {metrics['novelty']:.4f}")
     print(f"  Diversity: {metrics['avg_diversity']:.4f}")

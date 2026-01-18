@@ -218,19 +218,29 @@ class ClassGuidedDesigner:
         )
 
         # Convert SELFIES to p-SMILES and filter valid
+        n_total = len(all_selfies)
+        n_valid_any = 0
         valid_selfies = []
         valid_psmiles = []
         for selfies in all_selfies:
             psmiles = selfies_to_psmiles(selfies)
-            if psmiles is not None and check_validity(psmiles) and count_stars(psmiles) == 2:
-                valid_selfies.append(selfies)
-                valid_psmiles.append(psmiles)
+            if psmiles is None:
+                continue
+            if check_validity(psmiles):
+                n_valid_any += 1
+                if count_stars(psmiles) == 2:
+                    valid_selfies.append(selfies)
+                    valid_psmiles.append(psmiles)
+
+        n_valid_two_stars = len(valid_selfies)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if show_progress:
             print(f"Valid candidates: {len(valid_selfies)}")
 
         if len(valid_selfies) == 0:
-            return self._empty_class_results(target_class, num_candidates)
+            return self._empty_class_results(target_class, num_candidates, validity, validity_two_stars)
 
         # Filter by class (using p-SMILES)
         class_matches_psmiles = self.classifier.filter_by_class(valid_psmiles, target_class)
@@ -244,6 +254,8 @@ class ClassGuidedDesigner:
         results = {
             "target_class": target_class,
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_selfies),
             "n_class_matches": len(class_matches_psmiles),
             "class_success_rate": round(len(class_matches_psmiles) / len(valid_selfies), 4) if valid_selfies else 0.0,
@@ -324,16 +336,26 @@ class ClassGuidedDesigner:
         )
 
         # Convert SELFIES to p-SMILES and filter valid
+        n_total = len(all_selfies)
+        n_valid_any = 0
         valid_selfies = []
         valid_psmiles = []
         for selfies in all_selfies:
             psmiles = selfies_to_psmiles(selfies)
-            if psmiles is not None and check_validity(psmiles) and count_stars(psmiles) == 2:
-                valid_selfies.append(selfies)
-                valid_psmiles.append(psmiles)
+            if psmiles is None:
+                continue
+            if check_validity(psmiles):
+                n_valid_any += 1
+                if count_stars(psmiles) == 2:
+                    valid_selfies.append(selfies)
+                    valid_psmiles.append(psmiles)
+
+        n_valid_two_stars = len(valid_selfies)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if len(valid_selfies) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates)
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars)
 
         # Filter by class (using p-SMILES)
         class_matches_psmiles = self.classifier.filter_by_class(valid_psmiles, target_class)
@@ -341,7 +363,7 @@ class ClassGuidedDesigner:
         class_matches_selfies = [valid_selfies[valid_psmiles.index(s)] for s in class_matches_psmiles]
 
         if len(class_matches_psmiles) == 0:
-            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates,
+            return self._empty_joint_results(target_class, target_value, epsilon, num_candidates, validity, validity_two_stars,
                                              n_valid=len(valid_selfies))
 
         # Predict properties for class matches (use SELFIES for tokenization)
@@ -359,6 +381,8 @@ class ClassGuidedDesigner:
             "target_value": round(target_value, 4),
             "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_selfies),
             "n_class_matches": len(class_matches_psmiles),
             "n_joint_hits": len(joint_hits_psmiles),
@@ -414,11 +438,13 @@ class ClassGuidedDesigner:
         predictions = predictions * self.normalization_params['std'] + self.normalization_params['mean']
         return predictions
 
-    def _empty_class_results(self, target_class: str, n_generated: int) -> Dict:
+    def _empty_class_results(self, target_class: str, n_generated: int, validity: float = 0.0, validity_two_stars: float = 0.0) -> Dict:
         """Return empty results for class design."""
         return {
             "target_class": target_class,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": 0,
             "n_class_matches": 0,
             "class_success_rate": 0.0,
@@ -442,6 +468,8 @@ class ClassGuidedDesigner:
         target_value: float,
         epsilon: float,
         n_generated: int,
+        validity: float = 0.0,
+        validity_two_stars: float = 0.0,
         n_valid: int = 0
     ) -> Dict:
         """Return empty results for joint design."""
@@ -450,6 +478,8 @@ class ClassGuidedDesigner:
             "target_value": target_value,
             "epsilon": epsilon,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": n_valid,
             "n_class_matches": 0,
             "n_joint_hits": 0,

@@ -179,6 +179,7 @@ def main(args):
     print(f"  Conversion success rate: {metrics.get('conversion_success_rate', 1.0):.4f}")
     print(f"  Placeholder correct rate: {metrics.get('placeholder_correct_rate', 1.0):.4f}")
     print(f"  Validity: {metrics['validity']:.4f}")
+    print(f"  Validity (star=2): {metrics['validity_two_stars']:.4f}")
     print(f"  Uniqueness: {metrics['uniqueness']:.4f}")
     print(f"  Novelty: {metrics['novelty']:.4f}")
     print(f"  Diversity: {metrics['avg_diversity']:.4f}")

@@ -83,19 +83,29 @@ class InverseDesigner:
         )
 
         # Convert SELFIES to p-SMILES and filter to valid molecules with exactly 2 stars
+        n_total = len(all_selfies)
+        n_valid_any = 0
         valid_selfies = []
         valid_psmiles = []
         for selfies in all_selfies:
             psmiles = selfies_to_psmiles(selfies)
-            if psmiles is not None and check_validity(psmiles) and count_stars(psmiles) == 2:
-                valid_selfies.append(selfies)
-                valid_psmiles.append(psmiles)
+            if psmiles is None:
+                continue
+            if check_validity(psmiles):
+                n_valid_any += 1
+                if count_stars(psmiles) == 2:
+                    valid_selfies.append(selfies)
+                    valid_psmiles.append(psmiles)
+
+        n_valid_two_stars = len(valid_selfies)
+        validity = n_valid_any / n_total if n_total > 0 else 0.0
+        validity_two_stars = n_valid_two_stars / n_total if n_total > 0 else 0.0
 
         if show_progress:
             print(f"Valid candidates: {len(valid_selfies)} / {num_candidates}")
 
         if len(valid_selfies) == 0:
-            return self._empty_results(target_value, epsilon, num_candidates)
+            return self._empty_results(target_value, epsilon, num_candidates, validity, validity_two_stars)
 
         # Predict properties (use SELFIES for tokenization)
         predictions = self._predict_batch(valid_selfies, batch_size, show_progress)
@@ -111,6 +121,8 @@ class InverseDesigner:
             "target_value": round(target_value, 4),
             "epsilon": round(epsilon, 4),
             "n_generated": num_candidates,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": len(valid_selfies),
             "n_hits": len(hits_selfies),
             "success_rate": round(len(hits_selfies) / len(valid_selfies), 4) if valid_selfies else 0.0,
@@ -271,7 +283,9 @@ class InverseDesigner:
         self,
         target_value: float,
         epsilon: float,
-        n_generated: int
+        n_generated: int,
+        validity: float = 0.0,
+        validity_two_stars: float = 0.0
     ) -> Dict:
         """Return empty results when no valid samples.
 
@@ -287,6 +301,8 @@ class InverseDesigner:
             "target_value": target_value,
             "epsilon": epsilon,
             "n_generated": n_generated,
+            "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "n_valid": 0,
             "n_hits": 0,
             "success_rate": 0.0,

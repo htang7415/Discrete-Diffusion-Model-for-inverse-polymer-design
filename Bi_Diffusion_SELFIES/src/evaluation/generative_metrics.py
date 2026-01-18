@@ -139,7 +139,9 @@ class GenerativeEvaluator:
 
         # Star count distribution
         star_counter = Counter(star_counts)
-        frac_star_eq_2 = star_counter.get(2, 0) / n_valid if n_valid > 0 else 0.0
+        n_valid_star_eq_2 = star_counter.get(2, 0)
+        frac_star_eq_2 = n_valid_star_eq_2 / n_valid if n_valid > 0 else 0.0
+        validity_two_stars = n_valid_star_eq_2 / n_total if n_total > 0 else 0.0
 
         # SA scores (parallel computation for speedup)
         if show_progress:
@@ -179,6 +181,7 @@ class GenerativeEvaluator:
             "n_total": n_total,
             "n_valid": n_valid,
             "validity": round(validity, 4),
+            "validity_two_stars": round(validity_two_stars, 4),
             "uniqueness": round(uniqueness, 4),
             "novelty": round(novelty, 4),
             "avg_diversity": round(avg_diversity, 4),

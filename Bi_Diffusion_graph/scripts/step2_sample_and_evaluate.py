@@ -286,6 +286,7 @@ def main(args):
     print(f"  Generated: {len(generated_smiles)}")
     print(f"  Valid (2 stars): {len(valid_smiles)}")
     print(f"  Validity: {metrics['validity']:.4f}")
+    print(f"  Validity (star=2): {metrics['validity_two_stars']:.4f}")
     print(f"  Uniqueness: {metrics['uniqueness']:.4f}")
     print(f"  Novelty: {metrics['novelty']:.4f}")
     print(f"\nOutput files:")
