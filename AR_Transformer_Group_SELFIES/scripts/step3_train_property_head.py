@@ -97,6 +97,31 @@ def compute_val_r2(model, val_loader, device, normalization_params):
     return r2_score(all_labels, all_preds)
 
 
+def _extract_hidden_sizes(params):
+    """Resolve hidden_sizes list from hyperparameter dict."""
+    hidden_sizes = params.get('hidden_sizes')
+    if hidden_sizes is not None:
+        if isinstance(hidden_sizes, tuple):
+            return list(hidden_sizes)
+        if isinstance(hidden_sizes, list):
+            return list(hidden_sizes)
+        raise ValueError(
+            f"hidden_sizes must be a list or tuple, got {type(hidden_sizes).__name__}"
+        )
+
+    num_layers = params.get('num_layers')
+    if num_layers is not None:
+        num_layers = int(num_layers)
+        layer_sizes = [params.get(f'layer_{i}_size') for i in range(num_layers)]
+        if all(size is not None for size in layer_sizes):
+            return layer_sizes
+
+    if 'neurons' in params and 'num_layers' in params:
+        return [params['neurons']] * int(params['num_layers'])
+
+    raise KeyError("Hyperparameters missing hidden layer sizes")
+
+
 def create_objective(backbone_state_dict, train_dataset, val_dataset, config, device,
                      backbone_config, normalization_params, tokenizer, diffusion_config):
     """Create Optuna objective function for hyperparameter tuning.
@@ -113,16 +138,18 @@ def create_objective(backbone_state_dict, train_dataset, val_dataset, config, de
 
     def objective(trial):
         # Sample hyperparameters
-        num_layers = trial.suggest_categorical('num_layers', search_space['num_layers'])
-        neurons = trial.suggest_categorical('neurons', search_space['neurons'])
         lr = trial.suggest_categorical('learning_rate', search_space['learning_rate'])
         dropout = trial.suggest_categorical('dropout', search_space['dropout'])
         finetune_last_layers = trial.suggest_categorical('finetune_last_layers',
                                                           search_space['finetune_last_layers'])
         batch_size = trial.suggest_categorical('batch_size', search_space['batch_size'])
 
-        # Build hidden_sizes: num_layers layers with neurons each
-        hidden_sizes = [neurons] * num_layers
+        # Build hidden_sizes: allow per-layer sizes
+        num_layers = trial.suggest_categorical('num_layers', search_space['num_layers'])
+        hidden_sizes = [
+            trial.suggest_categorical(f'layer_{i}_size', search_space['neurons'])
+            for i in range(num_layers)
+        ]
 
         # Create fresh backbone for this trial
         backbone = DiffusionBackbone(
@@ -410,7 +437,7 @@ def main(args):
                 f.write("\n")
 
         # ===== Save best hyperparameters to txt file =====
-        hidden_sizes_best = [best_hyperparams['neurons']] * best_hyperparams['num_layers']
+        hidden_sizes_best = _extract_hidden_sizes(best_hyperparams)
         with open(tuning_dir / 'best_hyperparameters.txt', 'w') as f:
             f.write(f"Best Hyperparameters for {args.property}\n")
             f.write("=" * 50 + "\n\n")
@@ -436,7 +463,7 @@ def main(args):
     # ============================================================
     if best_hyperparams is not None:
         # Use best hyperparameters from tuning
-        hidden_sizes = [best_hyperparams['neurons']] * best_hyperparams['num_layers']
+        hidden_sizes = _extract_hidden_sizes(best_hyperparams)
         head_dropout = best_hyperparams['dropout']
         learning_rate = best_hyperparams['learning_rate']
         finetune_last_layers = best_hyperparams['finetune_last_layers']

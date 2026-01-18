@@ -162,7 +162,7 @@ hyperparameter_tuning:
 
   # Search space
   search_space:
-    # Property head architecture: 3-5 layers, neurons from [64, 128, 256, 512, 1024]
+    # Property head architecture: 3-5 layers, each layer size from [64, 128, 256, 512, 1024]
     num_layers: [3, 4, 5]
     neurons: [64, 128, 256, 512, 1024]
 
