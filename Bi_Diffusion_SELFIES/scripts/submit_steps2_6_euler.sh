@@ -4,7 +4,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --mem=128G
+#SBATCH --mem=164G
 #SBATCH --cpus-per-task=16
 #SBATCH --partition=research
 #SBATCH --gres=gpu:1

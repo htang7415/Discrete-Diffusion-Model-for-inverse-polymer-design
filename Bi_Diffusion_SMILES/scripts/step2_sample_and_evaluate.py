@@ -32,7 +32,7 @@ from src.utils.reproducibility import seed_everything, save_run_metadata
 
 
 # Constraint logging helpers
-BOND_CHARS = set(['-', '=', '#', '/', '\'])
+BOND_CHARS = set(['-', '=', '#', '/', '\\'])
 
 
 def _smiles_constraint_violations(smiles: str) -> dict:
