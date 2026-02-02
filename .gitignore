@@ -7,6 +7,8 @@ results_1
 Data/
 *Data
 Generated_polymers
+.claude
+.codex
 
 # 
 experiments*/
@@ -30,3 +32,4 @@ Experiments*/
 *.ipynb
 *.pptx
 *.sh
+*.gz

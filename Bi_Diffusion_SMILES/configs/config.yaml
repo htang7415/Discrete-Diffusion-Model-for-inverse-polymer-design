@@ -13,6 +13,7 @@ paths:
 # Data processing
 data:
   random_seed: 42
+  train_fraction: 1.0
   unlabeled_train_ratio: 0.95
   unlabeled_val_ratio: 0.05
   property_train_ratio: 0.8
@@ -50,7 +51,7 @@ proxy_backbone:
 # Model size presets for scaling law experiments
 model_sizes:
   small:
-    # Architecture (~12M params)
+    # Architecture (~10M params)
     hidden_size: 384
     num_layers: 6
     num_heads: 6
@@ -64,7 +65,7 @@ model_sizes:
     gradient_accumulation_steps: 4
     learning_rate: 3.0e-4
   medium:
-    # Architecture (~50M params)
+    # Architecture (~49M params)
     hidden_size: 640
     num_layers: 10
     num_heads: 10
@@ -78,7 +79,7 @@ model_sizes:
     gradient_accumulation_steps: 4
     learning_rate: 3.0e-4
   large:
-    # Architecture (~150M params)
+    # Architecture (~155M params)
     hidden_size: 960
     num_layers: 14
     num_heads: 12
@@ -92,7 +93,7 @@ model_sizes:
     gradient_accumulation_steps: 8
     learning_rate: 1.0e-4
   xl:
-    # Architecture (~400M params)
+    # Architecture (~393M params)
     hidden_size: 1280
     num_layers: 20
     num_heads: 16

@@ -13,6 +13,7 @@ paths:
 # Data processing
 data:
   random_seed: 42
+  train_fraction: 1.0
   unlabeled_train_ratio: 0.95
   unlabeled_val_ratio: 0.05
   property_train_ratio: 0.8

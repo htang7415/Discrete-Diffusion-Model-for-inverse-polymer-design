@@ -132,6 +132,19 @@ def main(args):
     train_df = pd.read_csv(train_path)
     val_df = pd.read_csv(val_path)
 
+    # Optionally subsample training data (validation always full)
+    train_fraction = config.get('data', {}).get('train_fraction', 1.0)
+    if train_fraction <= 0 or train_fraction > 1:
+        raise ValueError("data.train_fraction must be within (0, 1].")
+    if train_fraction < 1.0:
+        full_train_count = len(train_df)
+        n_train = max(1, int(round(full_train_count * train_fraction)))
+        train_df = train_df.sample(
+            n=n_train, random_state=config['data']['random_seed']
+        ).reset_index(drop=True)
+        if is_main_process:
+            print(f"Using {n_train}/{full_train_count} train samples ({train_fraction:.2%})")
+
     print(f"   Train samples: {len(train_df)}")
     print(f"   Val samples: {len(val_df)}")
 
