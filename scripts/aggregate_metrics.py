@@ -146,12 +146,9 @@ def _aggregate_constraints(method_dir: Path) -> List[pd.DataFrame]:
         df = _read_csv(metrics_path)
         if df.empty:
             continue
-        if "method" not in df.columns:
-            df["method"] = info.method
-        if "representation" not in df.columns:
-            df["representation"] = info.representation
-        if "model_size" not in df.columns:
-            df["model_size"] = model_size
+        df["method"] = info.method
+        df["representation"] = info.representation
+        df["model_size"] = model_size
         df = ensure_columns(df, CONSTRAINT_COLUMNS)
         rows.append(df[CONSTRAINT_COLUMNS])
     return rows
@@ -168,12 +165,9 @@ def _aggregate_ood(method_dir: Path) -> List[pd.DataFrame]:
         df = _read_csv(metrics_path)
         if df.empty:
             continue
-        if "method" not in df.columns:
-            df["method"] = info.method
-        if "representation" not in df.columns:
-            df["representation"] = info.representation
-        if "model_size" not in df.columns:
-            df["model_size"] = model_size
+        df["method"] = info.method
+        df["representation"] = info.representation
+        df["model_size"] = model_size
         df = ensure_columns(df, OOD_COLUMNS)
         rows.append(df[OOD_COLUMNS])
     return rows
