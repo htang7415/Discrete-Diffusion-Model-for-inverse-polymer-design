@@ -124,8 +124,15 @@ def main(args):
 
     # Load data (from base results dir which has the data)
     print("\n3. Loading data...")
-    train_path = results_dir / 'train_unlabeled.csv'
-    val_path = results_dir / 'val_unlabeled.csv'
+    repo_root = Path(__file__).resolve().parents[2]
+    shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv.gz'
+    if not shared_train_path.exists():
+        shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv'
+    shared_val_path = repo_root / 'Data' / 'Polymer' / 'val_unlabeled.csv.gz'
+    if not shared_val_path.exists():
+        shared_val_path = repo_root / 'Data' / 'Polymer' / 'val_unlabeled.csv'
+    train_path = shared_train_path if shared_train_path.exists() else results_dir / 'train_unlabeled.csv'
+    val_path = shared_val_path if shared_val_path.exists() else results_dir / 'val_unlabeled.csv'
     if not train_path.exists():
         train_path = Path(base_results_dir) / 'train_unlabeled.csv'
         val_path = Path(base_results_dir) / 'val_unlabeled.csv'

@@ -31,9 +31,29 @@ def _select_columns(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
 
 
 def get_shared_unlabeled_paths(repo_root: Path) -> Tuple[Path, Path]:
-    """Return canonical shared train/val unlabeled CSV paths."""
+    """Return canonical shared train/val unlabeled paths.
+
+    Preference order:
+    1) .csv.gz (new default to save disk)
+    2) .csv (backward compatibility)
+    """
     shared_dir = Path(repo_root) / "Data" / "Polymer"
-    return shared_dir / "train_unlabeled.csv", shared_dir / "val_unlabeled.csv"
+
+    train_gz = shared_dir / "train_unlabeled.csv.gz"
+    val_gz = shared_dir / "val_unlabeled.csv.gz"
+    train_csv = shared_dir / "train_unlabeled.csv"
+    val_csv = shared_dir / "val_unlabeled.csv"
+
+    train_path = train_gz if train_gz.exists() else train_csv
+    val_path = val_gz if val_gz.exists() else val_csv
+
+    # If neither variant exists, default to .csv.gz for new creations.
+    if not train_path.exists() and not train_csv.exists():
+        train_path = train_gz
+    if not val_path.exists() and not val_csv.exists():
+        val_path = val_gz
+
+    return train_path, val_path
 
 
 def load_or_create_shared_unlabeled_splits(
@@ -80,8 +100,7 @@ def load_or_create_shared_unlabeled_splits(
             f"  - {train_path}\n"
             f"  - {val_path}\n"
             "Create them first using:\n"
-            "  python scripts/add_sa_to_smipoly.py\n"
-            "  python scripts/split_unlabeled_full_columns.py"
+            "  python Data/Polymer/split_unlabeled_full_columns.py --overwrite"
         )
 
     unlabeled_data = data_loader.prepare_unlabeled_data()
