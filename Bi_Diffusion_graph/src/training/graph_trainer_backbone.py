@@ -1,6 +1,7 @@
 """Trainer for graph diffusion backbone model."""
 
 import warnings
+from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -381,14 +382,19 @@ class GraphBackboneTrainer:
         E = batch['E'].to(self.device)
         M = batch['M'].to(self.device)
 
-        # Forward pass with AMP
-        self._maybe_mark_cudagraph_step_begin()
-        with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
-            outputs = self.model(X, E, M)
-            loss = outputs['loss'] / self.grad_accum_steps
+        # Skip DDP gradient sync on accumulation microsteps to reduce communication overhead.
+        sync_context = nullcontext()
+        if self.distributed and isinstance(self.model, DDP) and not should_step:
+            sync_context = self.model.no_sync()
+        with sync_context:
+            # Forward pass with AMP
+            self._maybe_mark_cudagraph_step_begin()
+            with autocast('cuda', dtype=torch.bfloat16, enabled=self.use_amp):
+                outputs = self.model(X, E, M)
+                loss = outputs['loss'] / self.grad_accum_steps
 
-        # Backward pass with gradient scaling
-        self.scaler.scale(loss).backward()
+            # Backward pass with gradient scaling
+            self.scaler.scale(loss).backward()
 
         if should_step:
             # Unscale gradients for clipping
