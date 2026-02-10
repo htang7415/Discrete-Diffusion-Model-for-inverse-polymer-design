@@ -160,7 +160,8 @@ def main(args):
     opt_config = config.get('optimization', {})
     cache_tokenization = opt_config.get('cache_tokenization', False)
     cache_max_samples = int(opt_config.get('cache_tokenization_max_samples', 500000))
-    num_workers = opt_config.get('num_workers', 4)
+    num_workers = int(opt_config.get('num_workers', 4))
+    tokenize_canonicalize = bool(opt_config.get('tokenize_canonicalize', False))
     persistent_workers = bool(opt_config.get('persistent_workers', False)) and num_workers > 0
     pin_memory = opt_config.get('pin_memory', True)
     prefetch_factor = opt_config.get('prefetch_factor', 2)
@@ -169,6 +170,31 @@ def main(args):
     bucket_size_multiplier = int(opt_config.get('bucket_size_multiplier', 50))
     if bucket_size_multiplier <= 0:
         raise ValueError("optimization.bucket_size_multiplier must be > 0.")
+
+    # Bound DataLoader workers to per-rank CPU budget to avoid oversubscription.
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1") or 1)
+    slurm_cpus_per_task = int(os.environ.get("SLURM_CPUS_PER_TASK", "0") or 0)
+    host_cpus = os.cpu_count() or 1
+    if slurm_cpus_per_task > 0:
+        per_rank_cpu_budget = max(1, slurm_cpus_per_task // max(1, local_world_size))
+    else:
+        per_rank_cpu_budget = max(1, host_cpus // max(1, local_world_size))
+    per_rank_worker_cap = max(1, per_rank_cpu_budget - 2)
+    if num_workers <= 0:
+        num_workers = per_rank_worker_cap
+        if is_main_process:
+            print(
+                "Auto-selected DataLoader workers per rank: "
+                f"{num_workers} (cpu_budget={per_rank_cpu_budget}, local_world_size={local_world_size})"
+            )
+    elif num_workers > per_rank_worker_cap:
+        if is_main_process:
+            print(
+                f"Capping num_workers from {num_workers} to {per_rank_worker_cap} "
+                f"(cpu_budget={per_rank_cpu_budget}, local_world_size={local_world_size})"
+            )
+        num_workers = per_rank_worker_cap
+    persistent_workers = bool(opt_config.get('persistent_workers', False)) and num_workers > 0
 
     # Guard against memory blow-up: Group SELFIES full-cache is too large for multi-million datasets.
     total_samples = len(train_df) + len(val_df)
@@ -189,13 +215,15 @@ def main(args):
         train_df,
         tokenizer,
         cache_tokenization=cache_tokenization,
-        pad_to_max_length=not dynamic_padding
+        pad_to_max_length=not dynamic_padding,
+        canonicalize=tokenize_canonicalize
     )
     val_dataset = PolymerDataset(
         val_df,
         tokenizer,
         cache_tokenization=cache_tokenization,
-        pad_to_max_length=not dynamic_padding
+        pad_to_max_length=not dynamic_padding,
+        canonicalize=tokenize_canonicalize
     )
 
     active_collate_fn = collate_fn
@@ -260,6 +288,9 @@ def main(args):
             print(
                 f"Using length-bucket batching (bucket_size_multiplier={bucket_size_multiplier})."
             )
+        print(f"DataLoader workers per rank: {num_workers}")
+        if not tokenize_canonicalize:
+            print("Using fast Group SELFIES tokenization in Step1 (canonicalize=False).")
 
     # Create model
     if is_main_process:

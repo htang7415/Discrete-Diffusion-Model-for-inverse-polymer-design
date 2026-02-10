@@ -66,7 +66,12 @@ def main(args):
     # Get group_selfies config
     gs_config = config.get('group_selfies', {})
     max_groups = gs_config.get('max_groups', 20000)
-    grammar_sample_size = gs_config.get('grammar_sample_size', 0)  # 0 = use all
+    grammar_sample_size = int(gs_config.get('grammar_sample_size', 0) or 0)
+    roundtrip_test_size = int(gs_config.get('roundtrip_test_size', 0) or 0)
+    allow_full_grammar_build = bool(gs_config.get('allow_full_grammar_build', False))
+    allow_full_roundtrip_eval = bool(gs_config.get('allow_full_roundtrip_eval', False))
+    auto_grammar_sample_cap = int(gs_config.get('auto_grammar_sample_cap', 1_000_000))
+    auto_roundtrip_test_cap = int(gs_config.get('auto_roundtrip_test_cap', 200_000))
 
     # Get parallelization settings
     parallel_config = gs_config.get('parallel', {})
@@ -74,44 +79,84 @@ def main(args):
     chunk_size = parallel_config.get('chunk_size', 1000)
     parallel_enabled = parallel_config.get('enabled', False)
 
-    # Auto-detect CPU count if num_workers is 0
+    # Respect allocation limits to avoid OOM from worker over-subscription.
+    available_workers = int(os.environ.get('SLURM_CPUS_PER_TASK') or (os.cpu_count() or 1))
     if num_workers == 0:
-        import multiprocessing
-        num_workers = multiprocessing.cpu_count()
-        print(f"Auto-detected {num_workers} CPU cores")
+        num_workers = available_workers
+        print(f"Auto-detected {num_workers} CPU workers from allocation")
+    if num_workers > available_workers:
+        print(f"Capping num_workers from {num_workers} to {available_workers} based on CPU allocation")
+        num_workers = available_workers
+    num_workers = max(1, num_workers)
 
     # Disable parallelization if not enabled
     if not parallel_enabled:
         num_workers = 1
         print("Parallelization disabled in config")
 
+    train_count = len(train_df)
+
+    # Safety guard: full-19M grammar build can exceed memory due to RDKit mol list materialization.
+    if grammar_sample_size <= 0:
+        if allow_full_grammar_build:
+            effective_grammar_sample_size = train_count
+            print("   Full grammar build explicitly enabled (allow_full_grammar_build=true).")
+        else:
+            cap = auto_grammar_sample_cap if auto_grammar_sample_cap > 0 else 1_000_000
+            effective_grammar_sample_size = min(train_count, cap)
+            if effective_grammar_sample_size < train_count:
+                print(
+                    "   Auto-capping grammar_sample_size to avoid OOM: "
+                    f"{effective_grammar_sample_size:,}/{train_count:,}"
+                )
+    else:
+        effective_grammar_sample_size = min(grammar_sample_size, train_count)
+        if grammar_sample_size > train_count:
+            print(
+                f"   grammar_sample_size={grammar_sample_size:,} exceeds train size; "
+                f"using {effective_grammar_sample_size:,}."
+            )
+
+    # Safety guard for expensive roundtrip verification.
+    if roundtrip_test_size <= 0:
+        if allow_full_roundtrip_eval:
+            effective_roundtrip_test_size = 0  # 0 means full eval below
+            print("   Full roundtrip evaluation explicitly enabled (allow_full_roundtrip_eval=true).")
+        else:
+            cap = auto_roundtrip_test_cap if auto_roundtrip_test_cap > 0 else 200_000
+            effective_roundtrip_test_size = min(train_count, cap)
+            if effective_roundtrip_test_size < train_count:
+                print(
+                    "   Auto-capping roundtrip_test_size for runtime/memory safety: "
+                    f"{effective_roundtrip_test_size:,}/{train_count:,}"
+                )
+    else:
+        effective_roundtrip_test_size = min(roundtrip_test_size, train_count)
+
     # Sample for grammar building if configured (much faster for large datasets)
     # IMPORTANT: We sample ONCE and split into grammar and test sets to ensure
     # the test molecules share the same structural distribution as the grammar molecules.
-    all_train_smiles = train_df['p_smiles'].tolist()
+    total_sample_size = effective_grammar_sample_size + effective_roundtrip_test_size
+    total_sample_size = min(train_count, total_sample_size)
 
-    if grammar_sample_size > 0 and grammar_sample_size < len(all_train_smiles):
-        # Sample more than needed so we can split into grammar + test sets
-        roundtrip_test_size = gs_config.get('roundtrip_test_size', 0)
-        total_sample_size = grammar_sample_size + roundtrip_test_size
+    if total_sample_size < train_count:
+        print(f"   Sampling {total_sample_size:,} molecules total (from {train_count:,})")
+        sampled = train_df[['p_smiles']].sample(
+            n=total_sample_size, random_state=config['data']['random_seed']
+        ).reset_index(drop=True)
+        total_sample = sampled['p_smiles'].tolist()
+    else:
+        total_sample = train_df['p_smiles'].tolist()
 
-        if total_sample_size > len(all_train_smiles):
-            total_sample_size = len(all_train_smiles)
+    grammar_smiles = total_sample[:effective_grammar_sample_size]
+    train_roundtrip_sample = total_sample[effective_grammar_sample_size:]  # Held-out for testing
 
-        print(f"   Sampling {total_sample_size:,} molecules total (from {len(all_train_smiles):,})")
-        random.seed(config['data']['random_seed'])
-        total_sample = random.sample(all_train_smiles, total_sample_size)
-
-        # Split: first part for grammar, rest for roundtrip testing
-        grammar_smiles = total_sample[:grammar_sample_size]
-        train_roundtrip_sample = total_sample[grammar_sample_size:]  # Held-out for testing
-
-        print(f"   Grammar sample: {len(grammar_smiles):,}")
+    print(f"   Grammar sample: {len(grammar_smiles):,}")
+    if train_roundtrip_sample:
         print(f"   Held-out for roundtrip testing: {len(train_roundtrip_sample):,}")
     else:
-        grammar_smiles = all_train_smiles
-        train_roundtrip_sample = None  # Will sample separately
-        print(f"   Using all {len(grammar_smiles):,} molecules for grammar building")
+        train_roundtrip_sample = None
+        print("   No held-out roundtrip sample from grammar draw.")
 
     vocab, grammar = tokenizer.build_vocab_and_grammar(
         grammar_smiles,
@@ -132,8 +177,8 @@ def main(args):
     # Verify round-trip invertibility (PARALLELIZED with sampling)
     print("\n3. Verifying tokenization invertibility...")
 
-    # Get roundtrip test size from config
-    roundtrip_test_size = gs_config.get('roundtrip_test_size', 0)  # 0 = use all
+    # 0 means full train/val roundtrip evaluation.
+    roundtrip_test_size = effective_roundtrip_test_size
 
     # Use the held-out sample from grammar building (same distribution)
     # This is crucial: testing on molecules from a DIFFERENT random sample
@@ -145,22 +190,25 @@ def main(args):
         train_smiles_for_test = train_roundtrip_sample
         print(f"   Using {len(train_smiles_for_test):,} held-out molecules for train roundtrip (same distribution as grammar)")
     elif roundtrip_test_size > 0:
-        # Fallback: sample from all training data
-        train_smiles_for_test = train_df['p_smiles'].tolist()
-        if roundtrip_test_size < len(train_smiles_for_test):
-            print(f"   Sampling {roundtrip_test_size:,} molecules for train roundtrip (from {len(train_smiles_for_test):,})")
-            random.seed(config['data']['random_seed'] + 100)
-            train_smiles_for_test = random.sample(train_smiles_for_test, roundtrip_test_size)
+        # Fallback: sample directly from DataFrame to avoid materializing full 19M Python list.
+        if roundtrip_test_size < len(train_df):
+            print(f"   Sampling {roundtrip_test_size:,} molecules for train roundtrip (from {len(train_df):,})")
+            train_smiles_for_test = train_df['p_smiles'].sample(
+                n=roundtrip_test_size, random_state=config['data']['random_seed'] + 100
+            ).tolist()
+        else:
+            train_smiles_for_test = train_df['p_smiles'].tolist()
     else:
         train_smiles_for_test = train_df['p_smiles'].tolist()
 
     # Sample validation set
     if roundtrip_test_size > 0:
-        val_test_size = min(roundtrip_test_size // 10, len(val_smiles_for_test))  # 10% of train test size for val
+        val_test_size = min(roundtrip_test_size // 10, len(val_df))  # 10% of train test size for val
         if val_test_size < len(val_smiles_for_test):
             print(f"   Sampling {val_test_size:,} molecules for val roundtrip (from {len(val_smiles_for_test):,})")
-            random.seed(config['data']['random_seed'] + 200)
-            val_smiles_for_test = random.sample(val_smiles_for_test, val_test_size)
+            val_smiles_for_test = val_df['p_smiles'].sample(
+                n=val_test_size, random_state=config['data']['random_seed'] + 200
+            ).tolist()
 
     # Verify train set (parallel now works - grammar recreated in each worker)
     train_valid, train_total, train_failures = tokenizer.parallel_verify_roundtrip(

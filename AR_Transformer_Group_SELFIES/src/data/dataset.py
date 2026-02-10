@@ -24,7 +24,8 @@ class PolymerDataset(Dataset):
         smiles_col: str = 'p_smiles',
         max_length: Optional[int] = None,
         cache_tokenization: bool = False,
-        pad_to_max_length: bool = True
+        pad_to_max_length: bool = True,
+        canonicalize: bool = True
     ):
         """Initialize dataset.
 
@@ -35,12 +36,14 @@ class PolymerDataset(Dataset):
             max_length: Maximum sequence length (overrides tokenizer).
             cache_tokenization: Whether to pre-tokenize and cache all samples.
             pad_to_max_length: Whether to pad each sample to tokenizer.max_length.
+            canonicalize: Whether to canonicalize before grammar encoding.
         """
         self.df = df.reset_index(drop=True)
         self.tokenizer = tokenizer
         self.smiles_col = smiles_col
         self.cache_tokenization = cache_tokenization
         self.pad_to_max_length = pad_to_max_length
+        self.canonicalize = canonicalize
         self._cache: Dict[int, Dict[str, torch.Tensor]] = {}
 
         if max_length:
@@ -58,7 +61,8 @@ class PolymerDataset(Dataset):
                 smiles,
                 add_special_tokens=True,
                 padding=self.pad_to_max_length,
-                return_attention_mask=True
+                return_attention_mask=True,
+                canonicalize=self.canonicalize
             )
             self._cache[idx] = {
                 'input_ids': torch.tensor(encoded['input_ids'], dtype=torch.long),
@@ -80,7 +84,8 @@ class PolymerDataset(Dataset):
             smiles,
             add_special_tokens=True,
             padding=self.pad_to_max_length,
-            return_attention_mask=True
+            return_attention_mask=True,
+            canonicalize=self.canonicalize
         )
 
         return {

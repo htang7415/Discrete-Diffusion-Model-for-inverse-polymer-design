@@ -145,16 +145,67 @@ def main(args):
         if is_main_process:
             print(f"Using {n_train}/{full_train_count} train samples ({train_fraction:.2%})")
 
-    print(f"   Train samples: {len(train_df)}")
-    print(f"   Val samples: {len(val_df)}")
+    # Optionally subsample validation data for faster periodic evaluation.
+    train_cfg = config.get('training_backbone', {})
+    val_fraction = float(train_cfg.get('val_fraction', 1.0))
+    if val_fraction <= 0 or val_fraction > 1:
+        raise ValueError("training_backbone.val_fraction must be within (0, 1].")
+    if val_fraction < 1.0:
+        full_val_count = len(val_df)
+        n_val = max(1, int(round(full_val_count * val_fraction)))
+        val_df = val_df.sample(
+            n=n_val, random_state=config['data']['random_seed']
+        ).reset_index(drop=True)
+        if is_main_process:
+            print(f"Using {n_val}/{full_val_count} val samples ({val_fraction:.2%})")
+    val_max_samples = int(train_cfg.get('val_max_samples', 0))
+    if val_max_samples > 0 and len(val_df) > val_max_samples:
+        full_val_count = len(val_df)
+        val_df = val_df.sample(
+            n=val_max_samples, random_state=config['data']['random_seed']
+        ).reset_index(drop=True)
+        if is_main_process:
+            print(f"Capping val samples to {val_max_samples}/{full_val_count} for faster eval")
+
+    if is_main_process:
+        print(f"   Train samples: {len(train_df)}")
+        print(f"   Val samples: {len(val_df)}")
 
     # Get optimization settings
     opt_config = config.get('optimization', {})
     cache_graphs = opt_config.get('cache_tokenization', False)
     cache_max_samples = int(opt_config.get('cache_tokenization_max_samples', 500000))
-    num_workers = opt_config.get('num_workers', 4)
+    num_workers = int(opt_config.get('step1_num_workers', opt_config.get('num_workers', 4)))
     pin_memory = opt_config.get('pin_memory', True)
     prefetch_factor = opt_config.get('prefetch_factor', 2)
+    step1_persistent_workers = bool(
+        opt_config.get('step1_persistent_workers', opt_config.get('persistent_workers', False))
+    )
+
+    # Bound DataLoader workers to per-rank CPU budget to avoid oversubscription.
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1") or 1)
+    slurm_cpus_per_task = int(os.environ.get("SLURM_CPUS_PER_TASK", "0") or 0)
+    host_cpus = os.cpu_count() or 1
+    if slurm_cpus_per_task > 0:
+        per_rank_cpu_budget = max(1, slurm_cpus_per_task // max(1, local_world_size))
+    else:
+        per_rank_cpu_budget = max(1, host_cpus // max(1, local_world_size))
+    per_rank_worker_cap = max(1, per_rank_cpu_budget - 2)
+    if num_workers <= 0:
+        num_workers = per_rank_worker_cap
+        if is_main_process:
+            print(
+                "Auto-selected DataLoader workers per rank: "
+                f"{num_workers} (cpu_budget={per_rank_cpu_budget}, local_world_size={local_world_size})"
+            )
+    elif num_workers > per_rank_worker_cap:
+        if is_main_process:
+            print(
+                f"Capping num_workers from {num_workers} to {per_rank_worker_cap} "
+                f"(cpu_budget={per_rank_cpu_budget}, local_world_size={local_world_size})"
+            )
+        num_workers = per_rank_worker_cap
+    persistent_workers = step1_persistent_workers and num_workers > 0
 
     # Guard against memory blow-up: graph caching can exceed RAM on large datasets.
     total_samples = len(train_df) + len(val_df)
@@ -190,6 +241,7 @@ def main(args):
         sampler=train_sampler,
         collate_fn=graph_collate_fn,
         num_workers=num_workers,
+        persistent_workers=persistent_workers,
         pin_memory=pin_memory,
         prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
@@ -200,12 +252,15 @@ def main(args):
         sampler=val_sampler,
         collate_fn=graph_collate_fn,
         num_workers=num_workers,
+        persistent_workers=persistent_workers,
         pin_memory=pin_memory,
         prefetch_factor=prefetch_factor if num_workers > 0 else None
     )
 
-    print(f"   Train batches: {len(train_loader)}")
-    print(f"   Val batches: {len(val_loader)}")
+    if is_main_process:
+        print(f"   Train batches: {len(train_loader)}")
+        print(f"   Val batches: {len(val_loader)}")
+        print(f"   DataLoader workers per rank: {num_workers}")
 
     # Create model
     print("\n5. Creating graph diffusion model...")

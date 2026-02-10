@@ -957,7 +957,8 @@ class GroupSELFIESTokenizer:
         smiles: str,
         add_special_tokens: bool = True,
         padding: bool = True,
-        return_attention_mask: bool = True
+        return_attention_mask: bool = True,
+        canonicalize: bool = True
     ) -> Dict[str, List[int]]:
         """Encode a p-SMILES string to token IDs.
 
@@ -966,11 +967,12 @@ class GroupSELFIESTokenizer:
             add_special_tokens: Whether to add BOS/EOS tokens.
             padding: Whether to pad to max_length.
             return_attention_mask: Whether to return attention mask.
+            canonicalize: Whether to canonicalize before grammar encoding.
 
         Returns:
             Dictionary with 'input_ids' and optionally 'attention_mask'.
         """
-        tokens = self.tokenize(smiles)
+        tokens = self.tokenize(smiles, canonicalize=canonicalize)
 
         # Convert to IDs
         unk_id = self.vocab.get('[UNK]', 0)

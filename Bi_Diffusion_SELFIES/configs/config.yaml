@@ -129,6 +129,7 @@ training_backbone:
   max_steps: 300000
   gradient_clip_norm: 1.0
   eval_every: 1000
+  val_max_samples: 100000  # Optional Step1 validation cap for faster periodic eval.
   save_every: 100000
   num_epochs: 50
 
@@ -156,6 +157,8 @@ optimization:
   compile_mode: default            # torch.compile() mode; avoid cudagraph issues
   gradient_accumulation_steps: 4   # Effective batch = 256 * 4 = 1024
   num_workers: 4                   # DataLoader workers
+  step1_num_workers: 0             # Step1 only: 0 = auto-select workers per rank from CPU budget
+  step1_persistent_workers: true   # Step1 only: keep workers alive across epochs
   pin_memory: true                 # GPU memory pinning
   cudnn_benchmark: true            # cuDNN autotuning
   prefetch_factor: 2               # DataLoader prefetching

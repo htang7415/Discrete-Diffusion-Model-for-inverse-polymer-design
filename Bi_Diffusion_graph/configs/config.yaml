@@ -116,6 +116,7 @@ training_backbone:
   max_steps: 300000
   gradient_clip_norm: 1.0
   eval_every: 1000
+  val_max_samples: 100000  # Optional Step1 validation cap for faster periodic eval.
   save_every: 100000
   num_epochs: 50
 
@@ -142,6 +143,8 @@ optimization:
   compile_model: false             # Disabled for graph models (compatibility)
   gradient_accumulation_steps: 1
   num_workers: 4
+  step1_num_workers: 0             # Step1 only: 0 = auto-select workers per rank from CPU budget
+  step1_persistent_workers: true   # Step1 only: keep workers alive across epochs
   pin_memory: true
   cudnn_benchmark: true
   prefetch_factor: 2

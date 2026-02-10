@@ -38,13 +38,17 @@ group_selfies:
   diversity_selection: "simple"  # Selection method for fragments
 
   # Sampling settings for grammar building and verification
-  grammar_sample_size: 0         # Use all 19M molecules for grammar building
-  roundtrip_test_size: 0         # Verify all molecules (parallel now works)
+  grammar_sample_size: 1000000   # Use a large sample (full 19M can OOM on typical nodes)
+  roundtrip_test_size: 200000    # Large held-out roundtrip sample; set 0 + allow_full_roundtrip_eval=true for full
+  auto_grammar_sample_cap: 1000000
+  auto_roundtrip_test_cap: 200000
+  allow_full_grammar_build: false
+  allow_full_roundtrip_eval: false
 
   # Parallelization settings for vocabulary building
   parallel:
     enabled: true           # Enable/disable parallelization
-    num_workers: 100         # Number of CPU workers (0 = auto-detect, 1 = sequential)
+    num_workers: 0           # 0 = auto-detect from SLURM_CPUS_PER_TASK
     chunk_size: 10000        # Number of molecules per chunk
 
 # Backbone model (GPT-2-small-like)
@@ -165,11 +169,12 @@ optimization:
   use_amp: true                    # Mixed precision (BF16)
   compile_model: true              # torch.compile()
   gradient_accumulation_steps: 4   # Effective batch = 256 * 4 = 1024
-  num_workers: 4                   # DataLoader workers
+  num_workers: 0                   # 0 = auto-select workers per rank from CPU budget
   persistent_workers: true         # Keep workers alive across epochs to reduce startup overhead.
   dynamic_padding: true            # Pad to per-batch max length instead of global max length.
-  length_bucket_sampler: true      # Group similar-length samples to reduce padding waste.
+  length_bucket_sampler: false     # Full 19M index bucketing each epoch can dominate CPU time.
   bucket_size_multiplier: 50       # Larger buckets improve length grouping while keeping shuffle.
+  tokenize_canonicalize: false     # Skip per-sample canonicalization in Step1 for higher throughput.
   pin_memory: true                 # GPU memory pinning
   cudnn_benchmark: true            # cuDNN autotuning
   prefetch_factor: 2               # DataLoader prefetching
