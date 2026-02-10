@@ -49,11 +49,12 @@ def _read(rel_path: str) -> str:
     return (REPO_ROOT / rel_path).read_text(encoding="utf-8")
 
 
-def test_step0_uses_shared_unlabeled_loader_and_local_link():
+def test_step0_uses_preprocessed_shared_unlabeled_splits():
     for rel_path in ALL_STEP0_SCRIPTS:
         source = _read(rel_path)
-        assert "load_or_create_shared_unlabeled_splits" in source
-        assert "link_local_unlabeled_splits" in source
+        assert "require_preprocessed_unlabeled_splits" in source
+        assert "load_or_create_shared_unlabeled_splits" not in source
+        assert "link_local_unlabeled_splits" not in source
         assert "train_shared_path" in source
         assert "val_shared_path" in source
         assert "to_csv(results_dir / 'train_unlabeled.csv'" not in source

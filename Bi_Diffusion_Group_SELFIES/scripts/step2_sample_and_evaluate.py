@@ -28,6 +28,7 @@ from src.model.diffusion import DiscreteMaskingDiffusion
 from src.sampling.sampler import ConstrainedSampler
 from src.evaluation.generative_metrics import GenerativeEvaluator
 from src.utils.reproducibility import seed_everything, save_run_metadata
+from shared.unlabeled_data import require_preprocessed_unlabeled_splits
 
 
 
@@ -158,12 +159,7 @@ def main(args):
     # Load training data for novelty computation
     print("\n2. Loading training data...")
     repo_root = Path(__file__).resolve().parents[2]
-    shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv.gz'
-    if not shared_train_path.exists():
-        shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv'
-    train_path = shared_train_path if shared_train_path.exists() else results_dir / 'train_unlabeled.csv'
-    if not train_path.exists():
-        train_path = Path(base_results_dir) / 'train_unlabeled.csv'
+    train_path, _ = require_preprocessed_unlabeled_splits(repo_root)
     train_df = pd.read_csv(train_path)
     training_smiles = set(train_df['p_smiles'].tolist())
     print(f"Training set size: {len(training_smiles)}")

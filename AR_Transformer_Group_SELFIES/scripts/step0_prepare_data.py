@@ -21,8 +21,7 @@ from src.data.data_loader import PolymerDataLoader
 from src.data.tokenizer import GroupSELFIESTokenizer
 from src.utils.reproducibility import seed_everything, save_run_metadata
 from shared.unlabeled_data import (
-    load_or_create_shared_unlabeled_splits,
-    link_local_unlabeled_splits,
+    require_preprocessed_unlabeled_splits,
 )
 
 
@@ -52,23 +51,13 @@ def main(args):
     print("Step 0: Data Preparation (Group SELFIES)")
     print("=" * 50)
 
-    # Prepare or load shared unlabeled data
+    # Load preprocessed shared unlabeled data
     print("\n1. Loading shared unlabeled train/val data...")
-    shared = load_or_create_shared_unlabeled_splits(
-        data_loader=data_loader,
-        repo_root=repo_root,
-        create_if_missing=False,
-    )
-    train_df = shared['train_df']
-    val_df = shared['val_df']
-    train_shared_path = shared['train_path']
-    val_shared_path = shared['val_path']
-    if shared['created']:
-        print(f"Created shared train split: {train_shared_path}")
-        print(f"Created shared val split: {val_shared_path}")
-    else:
-        print(f"Using shared train split: {train_shared_path}")
-        print(f"Using shared val split: {val_shared_path}")
+    train_shared_path, val_shared_path = require_preprocessed_unlabeled_splits(repo_root)
+    train_df = pd.read_csv(train_shared_path)
+    val_df = pd.read_csv(val_shared_path)
+    print(f"Using shared train split: {train_shared_path}")
+    print(f"Using shared val split: {val_shared_path}")
 
     # Build tokenizer vocabulary and grammar from training data only
     print("\n2. Building Group SELFIES grammar and vocabulary...")
@@ -189,14 +178,32 @@ def main(args):
         verbose=True
     )
 
+    train_fail = train_total - train_valid
+    val_fail = val_total - val_valid
+
     # Save roundtrip results
     roundtrip_df = pd.DataFrame({
         'split': ['train', 'val'],
         'total': [train_total, val_total],
         'valid': [train_valid, val_valid],
+        'fail': [train_fail, val_fail],
         'pct': [100*train_valid/train_total, 100*val_valid/val_total]
     })
     roundtrip_df.to_csv(metrics_dir / 'tokenizer_roundtrip.csv', index=False)
+
+    # Save failure diagnostics for quick inspection
+    failure_rows = []
+    for split, failures in (('train', train_failures), ('val', val_failures)):
+        for failure in failures:
+            if isinstance(failure, dict):
+                row = {'split': split, **failure}
+            else:
+                row = {'split': split, 'smiles': str(failure), 'error': 'unknown'}
+            failure_rows.append(row)
+    if failure_rows:
+        pd.DataFrame(failure_rows).to_csv(
+            metrics_dir / 'tokenizer_roundtrip_failures.csv', index=False
+        )
 
     # Save 10 example roundtrips for demonstration
     print("   Saving tokenization examples...")
@@ -254,7 +261,9 @@ def main(args):
         'mean': [np.mean(train_lengths), np.mean(val_lengths)],
         'std': [np.std(train_lengths), np.std(val_lengths)],
         'min': [np.min(train_lengths), np.min(val_lengths)],
-        'max': [np.max(train_lengths), np.max(val_lengths)]
+        'max': [np.max(train_lengths), np.max(val_lengths)],
+        'p95': [np.percentile(train_lengths, 95), np.percentile(val_lengths, 95)],
+        'p99': [np.percentile(train_lengths, 99), np.percentile(val_lengths, 99)]
     })
     length_stats.to_csv(metrics_dir / 'length_stats.csv', index=False)
 
@@ -303,21 +312,9 @@ def main(args):
         style='step'
     )
 
-    # Link shared processed data into local results for backward compatibility
-    print("\n7. Linking shared processed data into local results...")
-    link_info = link_local_unlabeled_splits(
-        results_dir=results_dir,
-        train_src=train_shared_path,
-        val_src=val_shared_path,
-    )
-    print(
-        f"  {link_info['train_dst']} -> {link_info['train_src']} "
-        f"({link_info['train_mode']})"
-    )
-    print(
-        f"  {link_info['val_dst']} -> {link_info['val_src']} "
-        f"({link_info['val_mode']})"
-    )
+    print("\n7. Using shared split files directly...")
+    print(f"  Train split: {train_shared_path}")
+    print(f"  Val split: {val_shared_path}")
 
     # Print summary
     print("\n" + "=" * 50)

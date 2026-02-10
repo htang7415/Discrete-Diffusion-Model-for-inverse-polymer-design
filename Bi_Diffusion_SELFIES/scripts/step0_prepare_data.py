@@ -26,8 +26,7 @@ from src.utils.selfies_utils import (
     ensure_selfies_column,
 )
 from shared.unlabeled_data import (
-    load_or_create_shared_unlabeled_splits,
-    link_local_unlabeled_splits,
+    require_preprocessed_unlabeled_splits,
 )
 
 
@@ -57,23 +56,13 @@ def main(args):
     print("Step 0: Data Preparation")
     print("=" * 50)
 
-    # Prepare or load shared unlabeled data, then derive SELFIES view.
+    # Load preprocessed shared unlabeled data, then derive SELFIES view.
     print("\n1. Loading shared unlabeled train/val data...")
-    shared = load_or_create_shared_unlabeled_splits(
-        data_loader=data_loader,
-        repo_root=repo_root,
-        create_if_missing=False,
-    )
-    train_df = shared['train_df']
-    val_df = shared['val_df']
-    train_shared_path = shared['train_path']
-    val_shared_path = shared['val_path']
-    if shared['created']:
-        print(f"Created shared train split: {train_shared_path}")
-        print(f"Created shared val split: {val_shared_path}")
-    else:
-        print(f"Using shared train split: {train_shared_path}")
-        print(f"Using shared val split: {val_shared_path}")
+    train_shared_path, val_shared_path = require_preprocessed_unlabeled_splits(repo_root)
+    train_df = pd.read_csv(train_shared_path)
+    val_df = pd.read_csv(val_shared_path)
+    print(f"Using shared train split: {train_shared_path}")
+    print(f"Using shared val split: {val_shared_path}")
 
     print("   Converting shared p-SMILES to SELFIES view for tokenizer/statistics...")
     train_df = ensure_selfies_column(train_df)
@@ -105,6 +94,8 @@ def main(args):
         if tokenizer.verify_roundtrip(selfies):
             val_valid += 1
 
+    train_fail = train_total - train_valid
+    val_fail = val_total - val_valid
     print(f"Train SELFIES tokenization roundtrip: {train_valid}/{train_total} ({100*train_valid/train_total:.2f}%)")
     print(f"Val SELFIES tokenization roundtrip: {val_valid}/{val_total} ({100*val_valid/val_total:.2f}%)")
 
@@ -125,16 +116,25 @@ def main(args):
     print(f"p-SMILES <-> SELFIES conversion roundtrip: {conversion_success}/{sample_size} ({100*conversion_success/sample_size:.2f}%)")
     print(f"SELFIES with exactly 2 [I+3] placeholders: {sample_size - placeholder_count_errors}/{sample_size} ({100*(sample_size - placeholder_count_errors)/sample_size:.2f}%)")
 
-    # Save roundtrip results
+    # Save standardized tokenizer roundtrip results
     roundtrip_df = pd.DataFrame({
-        'test': ['SELFIES tokenization (train)', 'SELFIES tokenization (val)',
-                 'p-SMILES <-> SELFIES conversion', 'Placeholder count validation'],
-        'total': [train_total, val_total, sample_size, sample_size],
-        'valid': [train_valid, val_valid, conversion_success, sample_size - placeholder_count_errors],
-        'pct': [100*train_valid/train_total, 100*val_valid/val_total,
-                100*conversion_success/sample_size, 100*(sample_size - placeholder_count_errors)/sample_size]
+        'split': ['train', 'val'],
+        'total': [train_total, val_total],
+        'valid': [train_valid, val_valid],
+        'fail': [train_fail, val_fail],
+        'pct': [100*train_valid/train_total, 100*val_valid/val_total]
     })
     roundtrip_df.to_csv(metrics_dir / 'tokenizer_roundtrip.csv', index=False)
+
+    # Save SELFIES conversion diagnostics separately
+    conversion_df = pd.DataFrame({
+        'test': ['p-SMILES <-> SELFIES conversion', 'Placeholder count validation'],
+        'total': [sample_size, sample_size],
+        'valid': [conversion_success, sample_size - placeholder_count_errors],
+        'fail': [sample_size - conversion_success, placeholder_count_errors],
+        'pct': [100*conversion_success/sample_size, 100*(sample_size - placeholder_count_errors)/sample_size]
+    })
+    conversion_df.to_csv(metrics_dir / 'selfies_conversion_roundtrip.csv', index=False)
 
     # Save 10 example roundtrips for demonstration
     print("\n5. Saving tokenization examples...")
@@ -244,20 +244,9 @@ def main(args):
         style='step'
     )
 
-    print("\n9. Linking shared processed data into local results...")
-    link_info = link_local_unlabeled_splits(
-        results_dir=results_dir,
-        train_src=train_shared_path,
-        val_src=val_shared_path,
-    )
-    print(
-        f"  {link_info['train_dst']} -> {link_info['train_src']} "
-        f"({link_info['train_mode']})"
-    )
-    print(
-        f"  {link_info['val_dst']} -> {link_info['val_src']} "
-        f"({link_info['val_mode']})"
-    )
+    print("\n9. Using shared split files directly...")
+    print(f"  Train split: {train_shared_path}")
+    print(f"  Val split: {val_shared_path}")
 
     print("\n" + "=" * 50)
     print("Data preparation complete!")

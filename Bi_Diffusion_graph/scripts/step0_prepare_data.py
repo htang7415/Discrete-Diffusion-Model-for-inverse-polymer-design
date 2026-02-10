@@ -23,8 +23,7 @@ from src.data.data_loader import PolymerDataLoader
 from src.data.graph_tokenizer import GraphTokenizer, build_atom_vocab_from_data
 from src.utils.reproducibility import seed_everything, save_run_metadata
 from shared.unlabeled_data import (
-    load_or_create_shared_unlabeled_splits,
-    link_local_unlabeled_splits,
+    require_preprocessed_unlabeled_splits,
 )
 
 
@@ -82,23 +81,13 @@ def main(args):
     print("Step 0: Data Preparation (Graph Diffusion)")
     print("=" * 60)
 
-    # Prepare or load shared unlabeled data
+    # Load preprocessed shared unlabeled data
     print("\n1. Loading shared unlabeled train/val data...")
-    shared = load_or_create_shared_unlabeled_splits(
-        data_loader=data_loader,
-        repo_root=repo_root,
-        create_if_missing=False,
-    )
-    train_df = shared['train_df']
-    val_df = shared['val_df']
-    train_shared_path = shared['train_path']
-    val_shared_path = shared['val_path']
-    if shared['created']:
-        print(f"Created shared train split: {train_shared_path}")
-        print(f"Created shared val split: {val_shared_path}")
-    else:
-        print(f"Using shared train split: {train_shared_path}")
-        print(f"Using shared val split: {val_shared_path}")
+    train_shared_path, val_shared_path = require_preprocessed_unlabeled_splits(repo_root)
+    train_df = pd.read_csv(train_shared_path)
+    val_df = pd.read_csv(val_shared_path)
+    print(f"Using shared train split: {train_shared_path}")
+    print(f"Using shared val split: {val_shared_path}")
 
     print(f"   Train samples: {len(train_df)}")
     print(f"   Val samples: {len(val_df)}")
@@ -169,8 +158,8 @@ def main(args):
         stats_data['metric'].append(f'num_bonds_{key}')
         stats_data['value'].append(val)
 
-    stats_df = pd.DataFrame(stats_data)
-    stats_df.to_csv(metrics_dir / 'graph_statistics.csv', index=False)
+    graph_stats_df = pd.DataFrame(stats_data)
+    graph_stats_df.to_csv(metrics_dir / 'graph_statistics.csv', index=False)
 
     # Save atom type distribution
     atom_dist_df = pd.DataFrame([
@@ -207,6 +196,8 @@ def main(args):
     train_success, train_failures = test_graph_invertibility(
         train_smiles, graph_tokenizer
     )
+    train_total = len(train_smiles)
+    train_fail = train_total - train_success
     train_pct = 100 * train_success / len(train_smiles)
     print(f"   Train: {train_success}/{len(train_smiles)} ({train_pct:.2f}%)")
 
@@ -215,23 +206,45 @@ def main(args):
     val_success, val_failures = test_graph_invertibility(
         val_smiles, graph_tokenizer
     )
+    val_total = len(val_smiles)
+    val_fail = val_total - val_success
     val_pct = 100 * val_success / len(val_smiles)
     print(f"   Val: {val_success}/{len(val_smiles)} ({val_pct:.2f}%)")
 
-    # Save invertibility results
+    # Save standardized tokenizer roundtrip results
+    roundtrip_df = pd.DataFrame({
+        'split': ['train', 'val'],
+        'total': [train_total, val_total],
+        'valid': [train_success, val_success],
+        'fail': [train_fail, val_fail],
+        'pct': [train_pct, val_pct]
+    })
+    roundtrip_df.to_csv(metrics_dir / 'tokenizer_roundtrip.csv', index=False)
+
+    # Save graph-specific invertibility results
     invert_df = pd.DataFrame({
         'split': ['train', 'val'],
-        'total': [len(train_smiles), len(val_smiles)],
+        'total': [train_total, val_total],
         'success': [train_success, val_success],
+        'valid': [train_success, val_success],
+        'fail': [train_fail, val_fail],
         'pct': [train_pct, val_pct]
     })
     invert_df.to_csv(metrics_dir / 'graph_tokenizer_invertibility.csv', index=False)
 
     # Save failed examples (for debugging)
-    if train_failures:
-        failures_df = pd.DataFrame({'smiles': train_failures[:100]})
+    failure_rows = (
+        [{'split': 'train', 'smiles': s} for s in train_failures[:100]]
+        + [{'split': 'val', 'smiles': s} for s in val_failures[:100]]
+    )
+    if failure_rows:
+        failures_df = pd.DataFrame(failure_rows)
         failures_df.to_csv(metrics_dir / 'graph_tokenizer_failures.csv', index=False)
-        print(f"   Saved {min(len(train_failures), 100)} failure examples for debugging")
+        failures_df.to_csv(metrics_dir / 'tokenizer_roundtrip_failures.csv', index=False)
+        print(
+            "   Saved failure examples for debugging "
+            f"(train={min(len(train_failures), 100)}, val={min(len(val_failures), 100)})"
+        )
 
     # ========== SAVE TOKENIZATION EXAMPLES ==========
     print("\n6. Saving tokenization examples...")
@@ -275,6 +288,7 @@ def main(args):
 
     examples_df = pd.DataFrame(examples)
     examples_df.to_csv(metrics_dir / 'graph_tokenizer_examples.csv', index=False)
+    examples_df.to_csv(metrics_dir / 'tokenizer_examples.csv', index=False)
 
     # ========== COMPUTE ADDITIONAL STATISTICS ==========
     print("\n7. Computing additional statistics...")
@@ -293,6 +307,29 @@ def main(args):
     # SA score statistics
     train_sa = train_df['sa_score'].dropna().values
     val_sa = val_df['sa_score'].dropna().values
+
+    # Standardized dataset-level statistics
+    train_stats = data_loader.get_statistics(train_df)
+    val_stats = data_loader.get_statistics(val_df)
+    unlabeled_stats_df = pd.DataFrame([
+        {'split': 'train', **train_stats},
+        {'split': 'val', **val_stats}
+    ])
+    unlabeled_stats_df.to_csv(metrics_dir / 'unlabeled_data_stats.csv', index=False)
+
+    # Standardized length statistics (p-SMILES length for cross-method comparability)
+    train_lengths = train_df['p_smiles'].str.len().to_numpy()
+    val_lengths = val_df['p_smiles'].str.len().to_numpy()
+    length_stats_df = pd.DataFrame({
+        'split': ['train', 'val'],
+        'mean': [np.mean(train_lengths), np.mean(val_lengths)],
+        'std': [np.std(train_lengths), np.std(val_lengths)],
+        'min': [np.min(train_lengths), np.min(val_lengths)],
+        'max': [np.max(train_lengths), np.max(val_lengths)],
+        'p95': [np.percentile(train_lengths, 95), np.percentile(val_lengths, 95)],
+        'p99': [np.percentile(train_lengths, 99), np.percentile(val_lengths, 99)],
+    })
+    length_stats_df.to_csv(metrics_dir / 'length_stats.csv', index=False)
 
     sa_stats = pd.DataFrame({
         'split': ['train', 'val'],
@@ -348,21 +385,10 @@ def main(args):
         style='step'
     )
 
-    # ========== LINK SHARED PROCESSED DATA ==========
-    print("\n9. Linking shared processed data into local results...")
-    link_info = link_local_unlabeled_splits(
-        results_dir=results_dir,
-        train_src=train_shared_path,
-        val_src=val_shared_path,
-    )
-    print(
-        f"  {link_info['train_dst']} -> {link_info['train_src']} "
-        f"({link_info['train_mode']})"
-    )
-    print(
-        f"  {link_info['val_dst']} -> {link_info['val_src']} "
-        f"({link_info['val_mode']})"
-    )
+    # ========== SHARED DATA PATHS ==========
+    print("\n9. Using shared split files directly...")
+    print(f"  Train split: {train_shared_path}")
+    print(f"  Val split: {val_shared_path}")
 
     # ========== SUMMARY ==========
     print("\n" + "=" * 60)

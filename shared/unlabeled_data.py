@@ -56,6 +56,30 @@ def get_shared_unlabeled_paths(repo_root: Path) -> Tuple[Path, Path]:
     return train_path, val_path
 
 
+def require_preprocessed_unlabeled_splits(repo_root: Path) -> Tuple[Path, Path]:
+    """Return preprocessed shared train/val split paths (.csv.gz only).
+
+    This enforces the project convention where data preprocessing and splitting
+    are performed once via ``Data/Polymer/split_unlabeled_full_columns.py``,
+    and all method pipelines consume the resulting compressed files directly.
+    """
+    shared_dir = Path(repo_root) / "Data" / "Polymer"
+    train_path = shared_dir / "train_unlabeled.csv.gz"
+    val_path = shared_dir / "val_unlabeled.csv.gz"
+
+    missing = [str(p) for p in (train_path, val_path) if not p.exists()]
+    if missing:
+        missing_str = "\n".join(f"  - {p}" for p in missing)
+        raise FileNotFoundError(
+            "Preprocessed shared unlabeled splits were not found.\n"
+            f"Missing files:\n{missing_str}\n"
+            "Generate them first with:\n"
+            "  python Data/Polymer/split_unlabeled_full_columns.py --overwrite"
+        )
+
+    return train_path, val_path
+
+
 def load_or_create_shared_unlabeled_splits(
     data_loader,
     repo_root: Path,

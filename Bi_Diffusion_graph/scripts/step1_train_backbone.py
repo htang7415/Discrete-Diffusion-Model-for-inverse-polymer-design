@@ -9,6 +9,8 @@ from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+repo_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(repo_root))
 
 import torch
 import pandas as pd
@@ -27,6 +29,7 @@ from src.model.graph_backbone import GraphDiffusionBackbone
 from src.model.graph_diffusion import GraphMaskingDiffusion
 from src.training.graph_trainer_backbone import GraphBackboneTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
+from shared.unlabeled_data import require_preprocessed_unlabeled_splits
 
 
 def init_distributed():
@@ -125,17 +128,7 @@ def main(args):
     # Load data (from base results dir which has the data)
     print("\n3. Loading data...")
     repo_root = Path(__file__).resolve().parents[2]
-    shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv.gz'
-    if not shared_train_path.exists():
-        shared_train_path = repo_root / 'Data' / 'Polymer' / 'train_unlabeled.csv'
-    shared_val_path = repo_root / 'Data' / 'Polymer' / 'val_unlabeled.csv.gz'
-    if not shared_val_path.exists():
-        shared_val_path = repo_root / 'Data' / 'Polymer' / 'val_unlabeled.csv'
-    train_path = shared_train_path if shared_train_path.exists() else results_dir / 'train_unlabeled.csv'
-    val_path = shared_val_path if shared_val_path.exists() else results_dir / 'val_unlabeled.csv'
-    if not train_path.exists():
-        train_path = Path(base_results_dir) / 'train_unlabeled.csv'
-        val_path = Path(base_results_dir) / 'val_unlabeled.csv'
+    train_path, val_path = require_preprocessed_unlabeled_splits(repo_root)
     train_df = pd.read_csv(train_path)
     val_df = pd.read_csv(val_path)
 
