@@ -116,7 +116,7 @@ def plot_inverse_design(df: pd.DataFrame, output_path: Path) -> None:
 
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    fig.savefig(output_path, dpi=600, bbox_inches='tight')
     plt.close(fig)
     print(f"Saved Figure E to: {output_path}")
 
