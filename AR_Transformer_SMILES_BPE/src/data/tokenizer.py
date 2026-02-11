@@ -27,6 +27,7 @@ class PSmilesTokenizer:
     ]
 
     SPECIAL_TOKENS = ["[PAD]", "[MASK]", "[BOS]", "[EOS]", "[UNK]"]
+    STRUCTURAL_CHARS = set("*()=#/\\")
 
     def __init__(
         self,
@@ -53,6 +54,7 @@ class PSmilesTokenizer:
     def _compile_patterns(self) -> None:
         self.bracket_pattern = re.compile(r"\[[^\[\]]+\]")
         self.ring_pattern = re.compile(r"%\d{2}")
+        self.ring_token_pattern = re.compile(r"(?:\d|%\d{2})")
         self.multi_atom_pattern = re.compile(
             "|".join(sorted(self.MULTI_CHAR_ATOMS, key=len, reverse=True))
         )
@@ -127,6 +129,12 @@ class PSmilesTokenizer:
             counts.update((seq[i], seq[i + 1]) for i in range(len(seq) - 1))
         return counts
 
+    def _touches_structural_symbols(self, token: str) -> bool:
+        """Return True when token should remain atomic for constraints."""
+        if any(ch in token for ch in self.STRUCTURAL_CHARS):
+            return True
+        return self.ring_token_pattern.fullmatch(token) is not None
+
     def _select_best_pair(
         self,
         pair_counts: Counter,
@@ -137,6 +145,8 @@ class PSmilesTokenizer:
 
         for (left, right), count in pair_counts.items():
             if count < self.min_frequency:
+                continue
+            if self._touches_structural_symbols(left) or self._touches_structural_symbols(right):
                 continue
             merged = left + right
             if merged in symbol_set:
