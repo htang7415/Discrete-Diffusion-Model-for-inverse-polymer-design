@@ -16,6 +16,8 @@ data:
 alignment_views: ["smiles", "selfies", "group_selfies", "graph"]
 
 views:
+  smiles_bpe:
+    enabled: false
   selfies:
     enabled: true
   group_selfies:
@@ -74,6 +76,22 @@ property:
 smiles_encoder:
   method_dir: "../Bi_Diffusion_SMILES"
   config_path: "../Bi_Diffusion_SMILES/configs/config.yaml"
+  results_dir: ""
+  model_size: "small"
+  step_dir: "step1_backbone"
+  checkpoint_name: "backbone_best.pt"
+  tokenizer_path: ""
+  checkpoint_path: ""
+  pooling: "mean"
+  timestep: 1
+  batch_size: 256
+  device: "auto"
+  max_samples_d1: null
+  max_samples_d2: null
+
+smiles_bpe_encoder:
+  method_dir: "../Bi_Diffusion_SMILES_BPE"
+  config_path: "../Bi_Diffusion_SMILES_BPE/configs/config.yaml"
   results_dir: ""
   model_size: "small"
   step_dir: "step1_backbone"

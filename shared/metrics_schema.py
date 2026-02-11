@@ -11,6 +11,7 @@ METHOD_DIR_PREFIXES = ("Bi_Diffusion_", "AR_Transformer_")
 
 REPRESENTATION_ALIASES = {
     "SMILES": "SMILES",
+    "SMILES_BPE": "SMILES_BPE",
     "SELFIES": "SELFIES",
     "Group_SELFIES": "Group_SELFIES",
     "graph": "Graph",
@@ -115,6 +116,13 @@ ALIGNMENT_COLUMNS = [
 
 CONSTRAINTS_BY_REPRESENTATION = {
     "SMILES": [
+        "star_count",
+        "bond_placement",
+        "paren_balance",
+        "empty_parens",
+        "ring_closure",
+    ],
+    "SMILES_BPE": [
         "star_count",
         "bond_placement",
         "paren_balance",

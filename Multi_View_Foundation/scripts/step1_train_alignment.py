@@ -584,6 +584,11 @@ def main(args):
     views = config.get("alignment_views", ["smiles"])
     data_cfg = config.get("data", {})
     views_cfg = config.get("views", {})
+    primary_smiles_view = None
+    for candidate in views:
+        if candidate in {"smiles", "smiles_bpe"}:
+            primary_smiles_view = candidate
+            break
 
     device = "auto"
     for view in views:
@@ -598,6 +603,14 @@ def main(args):
             "input_col": "p_smiles",
             "encoder_key": "smiles_encoder",
             "tokenizer_module": REPO_ROOT / "Bi_Diffusion_SMILES" / "src" / "data" / "tokenizer.py",
+            "tokenizer_class": "PSmilesTokenizer",
+            "tokenizer_file": "tokenizer.json",
+        },
+        "smiles_bpe": {
+            "type": "sequence",
+            "input_col": "p_smiles",
+            "encoder_key": "smiles_bpe_encoder",
+            "tokenizer_module": REPO_ROOT / "Bi_Diffusion_SMILES_BPE" / "src" / "data" / "tokenizer.py",
             "tokenizer_class": "PSmilesTokenizer",
             "tokenizer_file": "tokenizer.json",
         },
@@ -697,7 +710,7 @@ def main(args):
         np.save(emb_d1_path, d1_embeddings)
         np.save(emb_d2_path, d2_embeddings)
 
-        if view == "smiles":
+        if view == primary_smiles_view:
             np.save(results_dir / "embeddings_d1.npy", d1_embeddings)
             np.save(results_dir / "embeddings_d2.npy", d2_embeddings)
 
@@ -726,7 +739,7 @@ def main(args):
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
-        if view == "smiles":
+        if view == primary_smiles_view:
             with open(results_dir / "embedding_meta.json", "w") as f:
                 json.dump(meta, f, indent=2)
 

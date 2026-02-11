@@ -396,6 +396,7 @@ def main(args):
 
     encoder_cfgs = {
         "smiles": config.get("smiles_encoder", {}),
+        "smiles_bpe": config.get("smiles_bpe_encoder", {}),
         "selfies": config.get("selfies_encoder", {}),
         "group_selfies": config.get("group_selfies_encoder", {}),
         "graph": config.get("graph_encoder", {}),
@@ -412,6 +413,13 @@ def main(args):
             "type": "sequence",
             "encoder_key": "smiles_encoder",
             "tokenizer_module": REPO_ROOT / "Bi_Diffusion_SMILES" / "src" / "data" / "tokenizer.py",
+            "tokenizer_class": "PSmilesTokenizer",
+            "tokenizer_file": "tokenizer.json",
+        },
+        "smiles_bpe": {
+            "type": "sequence",
+            "encoder_key": "smiles_bpe_encoder",
+            "tokenizer_module": REPO_ROOT / "Bi_Diffusion_SMILES_BPE" / "src" / "data" / "tokenizer.py",
             "tokenizer_class": "PSmilesTokenizer",
             "tokenizer_file": "tokenizer.json",
         },

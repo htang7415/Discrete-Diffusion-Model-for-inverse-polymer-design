@@ -43,6 +43,20 @@ def _resolve_with_base(path_str: str, base_dir: Path) -> Path:
     return path if path.is_absolute() else (base_dir / path)
 
 
+def _view_to_representation(view: str) -> str:
+    return "SMILES_BPE" if view == "smiles_bpe" else "SMILES"
+
+
+def _select_smiles_view(config: dict, override: Optional[str]) -> str:
+    if override:
+        return override
+    if config.get("smiles_encoder", {}).get("method_dir"):
+        return "smiles"
+    if config.get("smiles_bpe_encoder", {}).get("method_dir"):
+        return "smiles_bpe"
+    return "smiles"
+
+
 def _load_module(module_name: str, path: Path):
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
@@ -286,7 +300,10 @@ def main(args):
 
     valid_smiles = [s for s, v in zip(smiles_list, validity_mask) if v]
 
-    encoder_cfg = config.get("smiles_encoder", {})
+    encoder_view = _select_smiles_view(config, args.encoder_view)
+    encoder_cfg = config.get(f"{encoder_view}_encoder", {})
+    if not encoder_cfg:
+        raise ValueError(f"Encoder config not found for view: {encoder_view}")
     device = encoder_cfg.get("device", "auto")
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -302,12 +319,12 @@ def main(args):
 
     alignment_model = None
     if args.use_alignment:
-        view_dims = {"smiles": embeddings.shape[1] if embeddings.size else assets["backbone"].hidden_size}
+        view_dims = {encoder_view: embeddings.shape[1] if embeddings.size else assets["backbone"].hidden_size}
         alignment_model = _load_alignment_model(results_dir, view_dims, config, args.alignment_checkpoint)
         if alignment_model is None:
             raise FileNotFoundError("Alignment checkpoint not found for --use_alignment")
         device_proj = "cuda" if torch.cuda.is_available() else "cpu"
-        embeddings = _project_embeddings(alignment_model, "smiles", embeddings, device=device_proj)
+        embeddings = _project_embeddings(alignment_model, encoder_view, embeddings, device=device_proj)
 
     model_path = args.property_model_path
     if model_path is None:
@@ -351,7 +368,7 @@ def main(args):
         d2_embeddings = np.load(d2_path)
         if args.use_alignment and alignment_model is not None:
             device_proj = "cuda" if torch.cuda.is_available() else "cpu"
-            d2_embeddings = _project_embeddings(alignment_model, "smiles", d2_embeddings, device=device_proj)
+            d2_embeddings = _project_embeddings(alignment_model, encoder_view, d2_embeddings, device=device_proj)
         distances = knn_distances(embeddings, d2_embeddings, k=args.ood_k)
         d2_distance_scores = distances.mean(axis=1)
         order = np.argsort(d2_distance_scores)
@@ -370,7 +387,7 @@ def main(args):
 
     metrics_row = {
         "method": "Multi_View_Foundation",
-        "representation": "SMILES",
+        "representation": _view_to_representation(encoder_view),
         "model_size": assets["model_size"],
         "property": args.property,
         "target_value": target_value,
@@ -413,6 +430,7 @@ def main(args):
         json.dump({
             "candidates_csv": str(candidates_path),
             "smiles_column": smiles_col,
+            "encoder_view": encoder_view,
             "property": args.property,
             "target_value": target_value,
             "epsilon": epsilon,
@@ -427,6 +445,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
+    parser.add_argument("--encoder_view", type=str, default=None)
     parser.add_argument("--candidates_csv", type=str, required=True)
     parser.add_argument("--smiles_column", type=str, default=None)
     parser.add_argument("--property", type=str, required=True)

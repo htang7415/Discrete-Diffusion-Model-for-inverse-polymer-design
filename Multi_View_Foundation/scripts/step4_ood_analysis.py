@@ -31,7 +31,30 @@ def _load_model_size(results_dir: Path, config: dict) -> str:
         with open(meta_path, "r") as f:
             meta = json.load(f)
         return meta.get("model_size", "base")
-    return config.get("smiles_encoder", {}).get("model_size") or "base"
+    return (
+        config.get("smiles_encoder", {}).get("model_size")
+        or config.get("smiles_bpe_encoder", {}).get("model_size")
+        or "base"
+    )
+
+
+def _load_primary_view(results_dir: Path, config: dict) -> str:
+    meta_path = results_dir / "embedding_meta.json"
+    if meta_path.exists():
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        view = meta.get("view")
+        if isinstance(view, str) and view:
+            return view
+    if (results_dir / "embeddings_smiles_bpe_d1.npy").exists():
+        return "smiles_bpe"
+    if config.get("smiles_bpe_encoder", {}).get("method_dir") and not config.get("smiles_encoder", {}).get("method_dir"):
+        return "smiles_bpe"
+    return "smiles"
+
+
+def _view_to_representation(view: str) -> str:
+    return "SMILES_BPE" if view == "smiles_bpe" else "SMILES"
 
 
 def _load_alignment_model(results_dir: Path, view_dims: dict, config: dict, checkpoint_override: Optional[str]):
@@ -70,6 +93,7 @@ def main(args):
     results_dir = _resolve_path(config["paths"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
     save_config(config, results_dir / "config_used.yaml")
+    primary_view = _load_primary_view(results_dir, config)
 
     d1_path = results_dir / "embeddings_d1.npy"
     d2_path = results_dir / "embeddings_d2.npy"
@@ -79,13 +103,13 @@ def main(args):
     if args.use_alignment:
         d1 = np.load(d1_path)
         d2 = np.load(d2_path)
-        view_dims = {"smiles": d1.shape[1]}
+        view_dims = {primary_view: d1.shape[1]}
         model = _load_alignment_model(results_dir, view_dims, config, args.alignment_checkpoint)
         if model is None:
             raise FileNotFoundError("Alignment checkpoint not found for --use_alignment")
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        d1_proj = _project_embeddings(model, "smiles", d1, device=device)
-        d2_proj = _project_embeddings(model, "smiles", d2, device=device)
+        d1_proj = _project_embeddings(model, primary_view, d1, device=device)
+        d2_proj = _project_embeddings(model, primary_view, d2, device=device)
         d1_path = results_dir / "embeddings_d1_aligned.npy"
         d2_path = results_dir / "embeddings_d2_aligned.npy"
         np.save(d1_path, d1_proj)
@@ -98,7 +122,7 @@ def main(args):
 
     row = {
         "method": "Multi_View_Foundation",
-        "representation": "SMILES",
+        "representation": _view_to_representation(primary_view),
         "model_size": _load_model_size(results_dir, config),
         **ood_metrics,
     }
