@@ -8,7 +8,7 @@ creates empty CSVs with the standard schema when data is missing.
 import argparse
 import importlib.util
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Set
 import sys
 
 import pandas as pd
@@ -49,11 +49,49 @@ def _load_module(module_name: str, module_path: Path):
     return module
 
 
-def _aggregate_generation(method_dir: Path) -> List[pd.DataFrame]:
+def _normalize_model_size(value: str) -> str:
+    token = value.strip().lower()
+    aliases = {
+        "s": "small",
+        "m": "medium",
+        "l": "large",
+        "x": "xl",
+    }
+    return aliases.get(token, token)
+
+
+def _parse_model_sizes_arg(raw_value: str) -> Optional[Set[str]]:
+    if raw_value is None:
+        return None
+    value = raw_value.strip()
+    if not value or value.lower() == "all":
+        return None
+
+    allowed = {"small", "medium", "large", "xl", "base"}
+    parsed = {_normalize_model_size(v) for v in value.split(",") if v.strip()}
+    unknown = sorted(v for v in parsed if v not in allowed)
+    if unknown:
+        raise ValueError(
+            f"Unsupported model size(s): {', '.join(unknown)}. "
+            "Expected one or more of: small, medium, large, xl, base, all."
+        )
+    return parsed
+
+
+def _include_model_size(model_size: str, allowed_model_sizes: Optional[Set[str]]) -> bool:
+    return allowed_model_sizes is None or model_size in allowed_model_sizes
+
+
+def _aggregate_generation(
+    method_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     rows = []
     info = parse_method_representation(method_dir.name)
     for results_dir in list_results_dirs(method_dir):
         model_size = infer_model_size(results_dir)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         metrics_path = results_dir / "step2_sampling" / "metrics" / "sampling_generative_metrics.csv"
         if not metrics_path.exists():
             continue
@@ -77,11 +115,16 @@ def _infer_property_from_path(path: Path) -> str:
     return path.stem.replace("_design", "")
 
 
-def _aggregate_inverse(method_dir: Path) -> List[pd.DataFrame]:
+def _aggregate_inverse(
+    method_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     rows = []
     info = parse_method_representation(method_dir.name)
     for results_dir in list_results_dirs(method_dir):
         model_size = infer_model_size(results_dir)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         for metrics_path in results_dir.glob("step4_*/metrics/*.csv"):
             if "design" not in metrics_path.name:
                 continue
@@ -98,7 +141,10 @@ def _aggregate_inverse(method_dir: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_property(method_dir: Path) -> List[pd.DataFrame]:
+def _aggregate_property(
+    method_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     """Aggregate property prediction metrics from step3 outputs.
 
     Looks for metrics in step3_{property}/metrics/ directories.
@@ -108,6 +154,8 @@ def _aggregate_property(method_dir: Path) -> List[pd.DataFrame]:
     info = parse_method_representation(method_dir.name)
     for results_dir in list_results_dirs(method_dir):
         model_size = infer_model_size(results_dir)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         # Look for step3 property directories
         for step3_dir in results_dir.glob("step3_*"):
             if not step3_dir.is_dir():
@@ -151,11 +199,16 @@ def _aggregate_property(method_dir: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_constraints(method_dir: Path) -> List[pd.DataFrame]:
+def _aggregate_constraints(
+    method_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     rows = []
     info = parse_method_representation(method_dir.name)
     for results_dir in list_results_dirs(method_dir):
         model_size = infer_model_size(results_dir)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         metrics_path = results_dir / "step2_sampling" / "metrics" / "constraint_metrics.csv"
         if not metrics_path.exists():
             continue
@@ -170,11 +223,16 @@ def _aggregate_constraints(method_dir: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_ood(method_dir: Path) -> List[pd.DataFrame]:
+def _aggregate_ood(
+    method_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     rows = []
     info = parse_method_representation(method_dir.name)
     for results_dir in list_results_dirs(method_dir):
         model_size = infer_model_size(results_dir)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         metrics_path = results_dir / "step2_sampling" / "metrics" / "metrics_ood.csv"
         if not metrics_path.exists():
             continue
@@ -189,7 +247,10 @@ def _aggregate_ood(method_dir: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _iter_mvf_results_dirs(root: Path) -> List[Path]:
+def _iter_mvf_results_dirs(
+    root: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[Path]:
     mvf_dir = root / "Multi_View_Foundation"
     if not mvf_dir.exists():
         return []
@@ -207,6 +268,9 @@ def _iter_mvf_results_dirs(root: Path) -> List[Path]:
     for path in candidates:
         if not path.exists() or not path.is_dir():
             continue
+        model_size = infer_model_size(path)
+        if not _include_model_size(model_size, allowed_model_sizes):
+            continue
         resolved = path.resolve()
         if resolved in seen:
             continue
@@ -215,13 +279,16 @@ def _iter_mvf_results_dirs(root: Path) -> List[Path]:
     return unique_dirs
 
 
-def _aggregate_alignment(root: Path) -> List[pd.DataFrame]:
+def _aggregate_alignment(
+    root: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     """Aggregate alignment metrics from Multi_View_Foundation.
 
     Looks for metrics_alignment.csv in Multi_View_Foundation/results/.
     """
     rows = []
-    for subdir in _iter_mvf_results_dirs(root):
+    for subdir in _iter_mvf_results_dirs(root, allowed_model_sizes=allowed_model_sizes):
         metrics_path = subdir / "metrics_alignment.csv"
         if not metrics_path.exists():
             continue
@@ -234,13 +301,16 @@ def _aggregate_alignment(root: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_mvf_property(root: Path) -> List[pd.DataFrame]:
+def _aggregate_mvf_property(
+    root: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     """Aggregate property metrics from Multi_View_Foundation.
 
     Looks for metrics_property.csv in Multi_View_Foundation/results/.
     """
     rows = []
-    for subdir in _iter_mvf_results_dirs(root):
+    for subdir in _iter_mvf_results_dirs(root, allowed_model_sizes=allowed_model_sizes):
         metrics_path = subdir / "metrics_property.csv"
         if not metrics_path.exists():
             continue
@@ -260,10 +330,13 @@ def _aggregate_mvf_property(root: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_mvf_inverse(root: Path) -> List[pd.DataFrame]:
+def _aggregate_mvf_inverse(
+    root: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     """Aggregate inverse-design metrics from Multi_View_Foundation."""
     rows = []
-    for subdir in _iter_mvf_results_dirs(root):
+    for subdir in _iter_mvf_results_dirs(root, allowed_model_sizes=allowed_model_sizes):
         metrics_path = subdir / "metrics_inverse.csv"
         if not metrics_path.exists():
             continue
@@ -283,10 +356,13 @@ def _aggregate_mvf_inverse(root: Path) -> List[pd.DataFrame]:
     return rows
 
 
-def _aggregate_mvf_ood(root: Path) -> List[pd.DataFrame]:
+def _aggregate_mvf_ood(
+    root: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> List[pd.DataFrame]:
     """Aggregate OOD metrics from Multi_View_Foundation."""
     rows = []
-    for subdir in _iter_mvf_results_dirs(root):
+    for subdir in _iter_mvf_results_dirs(root, allowed_model_sizes=allowed_model_sizes):
         metrics_path = subdir / "metrics_ood.csv"
         if not metrics_path.exists():
             continue
@@ -316,7 +392,11 @@ def _write_or_empty(df_list: List[pd.DataFrame], columns, output_path: Path) -> 
     df.to_csv(output_path, index=False)
 
 
-def _write_mvf_raw_csvs(root: Path, output_dir: Path) -> None:
+def _write_mvf_raw_csvs(
+    root: Path,
+    output_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> None:
     """Copy raw MVF metric CSVs by results directory for paper traceability."""
     output_dir.mkdir(parents=True, exist_ok=True)
     metric_names = [
@@ -326,7 +406,7 @@ def _write_mvf_raw_csvs(root: Path, output_dir: Path) -> None:
         "metrics_inverse.csv",
     ]
 
-    for mvf_results_dir in _iter_mvf_results_dirs(root):
+    for mvf_results_dir in _iter_mvf_results_dirs(root, allowed_model_sizes=allowed_model_sizes):
         tag = mvf_results_dir.name
         for metric_name in metric_names:
             src = mvf_results_dir / metric_name
@@ -339,7 +419,12 @@ def _write_mvf_raw_csvs(root: Path, output_dir: Path) -> None:
             df.to_csv(out_path, index=False)
 
 
-def _save_paper_assets(root: Path, aggregate_dir: Path, paper_output_dir: Path) -> None:
+def _save_paper_assets(
+    root: Path,
+    aggregate_dir: Path,
+    paper_output_dir: Path,
+    allowed_model_sizes: Optional[Set[str]] = None,
+) -> None:
     """Save paper-ready CSV package and figures (A-E)."""
     csv_dir = paper_output_dir / "csv"
     fig_dir = paper_output_dir / "figures"
@@ -367,7 +452,7 @@ def _save_paper_assets(root: Path, aggregate_dir: Path, paper_output_dir: Path) 
         df.to_csv(csv_dir / alias_name, index=False)
 
     # Save raw MVF CSVs separately (per results folder).
-    _write_mvf_raw_csvs(root, csv_dir / "mvf")
+    _write_mvf_raw_csvs(root, csv_dir / "mvf", allowed_model_sizes=allowed_model_sizes)
 
     # Generate figures A-E from aggregate CSVs.
     figure_specs = [
@@ -444,10 +529,17 @@ def main() -> None:
         default="results/paper_package",
         help="Output directory for paper CSVs and figures (used with --save_paper_assets).",
     )
+    parser.add_argument(
+        "--model_sizes",
+        type=str,
+        default="all",
+        help="Comma-separated model sizes to include: small,medium,large,xl,base (or all).",
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
     output_dir = Path(args.output).resolve()
+    allowed_model_sizes = _parse_model_sizes_arg(args.model_sizes)
 
     gen_rows = []
     inv_rows = []
@@ -457,17 +549,17 @@ def main() -> None:
     align_rows = []
 
     for method_dir in list_method_dirs(root):
-        gen_rows.extend(_aggregate_generation(method_dir))
-        inv_rows.extend(_aggregate_inverse(method_dir))
-        prop_rows.extend(_aggregate_property(method_dir))
-        cons_rows.extend(_aggregate_constraints(method_dir))
-        ood_rows.extend(_aggregate_ood(method_dir))
+        gen_rows.extend(_aggregate_generation(method_dir, allowed_model_sizes=allowed_model_sizes))
+        inv_rows.extend(_aggregate_inverse(method_dir, allowed_model_sizes=allowed_model_sizes))
+        prop_rows.extend(_aggregate_property(method_dir, allowed_model_sizes=allowed_model_sizes))
+        cons_rows.extend(_aggregate_constraints(method_dir, allowed_model_sizes=allowed_model_sizes))
+        ood_rows.extend(_aggregate_ood(method_dir, allowed_model_sizes=allowed_model_sizes))
 
     # Aggregate from Multi_View_Foundation
-    inv_rows.extend(_aggregate_mvf_inverse(root))
-    ood_rows.extend(_aggregate_mvf_ood(root))
-    align_rows.extend(_aggregate_alignment(root))
-    prop_rows.extend(_aggregate_mvf_property(root))
+    inv_rows.extend(_aggregate_mvf_inverse(root, allowed_model_sizes=allowed_model_sizes))
+    ood_rows.extend(_aggregate_mvf_ood(root, allowed_model_sizes=allowed_model_sizes))
+    align_rows.extend(_aggregate_alignment(root, allowed_model_sizes=allowed_model_sizes))
+    prop_rows.extend(_aggregate_mvf_property(root, allowed_model_sizes=allowed_model_sizes))
 
     _write_or_empty(gen_rows, GENERATION_COLUMNS, output_dir / "metrics_generation.csv")
     _write_or_empty(inv_rows, INVERSE_COLUMNS, output_dir / "metrics_inverse.csv")
@@ -477,9 +569,17 @@ def main() -> None:
     _write_or_empty(align_rows, ALIGNMENT_COLUMNS, output_dir / "metrics_alignment.csv")
 
     print(f"Wrote aggregate metrics to: {output_dir}")
+    if allowed_model_sizes is not None:
+        sizes = ",".join(sorted(allowed_model_sizes))
+        print(f"Filtered model sizes: {sizes}")
     if args.save_paper_assets:
         paper_output_dir = Path(args.paper_output).resolve()
-        _save_paper_assets(root, output_dir, paper_output_dir)
+        _save_paper_assets(
+            root,
+            output_dir,
+            paper_output_dir,
+            allowed_model_sizes=allowed_model_sizes,
+        )
 
 
 if __name__ == "__main__":
