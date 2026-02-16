@@ -25,6 +25,76 @@ from shared.unlabeled_data import (
 )
 
 
+def _export_step1_group_selfies_cache(
+    df: pd.DataFrame,
+    split_name: str,
+    cache_path: Path,
+    tokenizer: GroupSELFIESTokenizer,
+    num_workers: int,
+    pool_chunk_size: int,
+    batch_size: int,
+    canonicalize: bool
+) -> dict:
+    """Export chunked Step1 cache with precomputed Group SELFIES strings."""
+    if batch_size <= 0:
+        raise ValueError("group_selfies.step1_cache_batch_size must be > 0.")
+    if pool_chunk_size <= 0:
+        raise ValueError("group_selfies.step1_cache_chunk_size must be > 0.")
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        cache_path.unlink()
+
+    total = len(df)
+    kept_total = 0
+    failed_total = 0
+
+    print(
+        f"   Exporting {split_name} Group SELFIES cache to {cache_path} "
+        f"(rows={total:,}, batch_size={batch_size:,}, workers={num_workers})"
+    )
+
+    for start in range(0, total, batch_size):
+        stop = min(start + batch_size, total)
+        smiles_batch = df['p_smiles'].iloc[start:stop].astype(str).tolist()
+        encoded_batch = tokenizer.parallel_encode_group_selfies(
+            smiles_batch,
+            num_workers=num_workers,
+            chunk_size=pool_chunk_size,
+            canonicalize=canonicalize,
+            verbose=False
+        )
+
+        chunk_df = pd.DataFrame({
+            'p_smiles': smiles_batch,
+            'group_selfies': encoded_batch
+        })
+        failed = int(chunk_df['group_selfies'].isna().sum())
+        failed_total += failed
+        if failed > 0:
+            chunk_df = chunk_df[chunk_df['group_selfies'].notna()].copy()
+
+        chunk_df.to_csv(
+            cache_path,
+            mode='w' if start == 0 else 'a',
+            header=(start == 0),
+            index=False,
+            compression='gzip'
+        )
+        kept_total += len(chunk_df)
+
+        print(f"      {split_name}: {stop:,}/{total:,} rows processed")
+
+    return {
+        'split': split_name,
+        'total': total,
+        'kept': kept_total,
+        'failed': failed_total,
+        'canonicalize': canonicalize,
+        'cache_path': str(cache_path),
+    }
+
+
 def main(args):
     """Main function."""
     # Load config
@@ -174,8 +244,47 @@ def main(args):
     tokenizer.save(tokenizer_path)
     print(f"Tokenizer saved to: {tokenizer_path}")
 
+    # Optional Step1 acceleration cache: precompute Group SELFIES strings once in Step0.
+    cache_enabled = bool(gs_config.get('step1_cache_enabled', True))
+    cache_batch_size = int(gs_config.get('step1_cache_batch_size', 200000))
+    cache_chunk_size = int(gs_config.get('step1_cache_chunk_size', chunk_size))
+    cache_canonicalize = bool(gs_config.get('step1_cache_canonicalize', False))
+    cache_train_file = str(gs_config.get('step1_cache_train_file', 'train_group_selfies_cache.csv.gz'))
+    cache_val_file = str(gs_config.get('step1_cache_val_file', 'val_group_selfies_cache.csv.gz'))
+    cache_stats = []
+    if cache_enabled:
+        print("\n3. Exporting precomputed Group SELFIES cache for Step1...")
+        train_cache_path = results_dir / cache_train_file
+        val_cache_path = results_dir / cache_val_file
+        cache_stats.append(_export_step1_group_selfies_cache(
+            train_df,
+            'train',
+            train_cache_path,
+            tokenizer,
+            num_workers=num_workers,
+            pool_chunk_size=cache_chunk_size,
+            batch_size=cache_batch_size,
+            canonicalize=cache_canonicalize,
+        ))
+        cache_stats.append(_export_step1_group_selfies_cache(
+            val_df,
+            'val',
+            val_cache_path,
+            tokenizer,
+            num_workers=num_workers,
+            pool_chunk_size=cache_chunk_size,
+            batch_size=cache_batch_size,
+            canonicalize=cache_canonicalize,
+        ))
+        pd.DataFrame(cache_stats).to_csv(
+            metrics_dir / 'step1_group_selfies_cache_stats.csv',
+            index=False
+        )
+    else:
+        print("\n3. Step1 Group SELFIES cache export disabled (group_selfies.step1_cache_enabled=false).")
+
     # Verify round-trip invertibility (PARALLELIZED with sampling)
-    print("\n3. Verifying tokenization invertibility...")
+    print("\n4. Verifying tokenization invertibility...")
 
     # 0 means full train/val roundtrip evaluation.
     roundtrip_test_size = effective_roundtrip_test_size
@@ -277,7 +386,7 @@ def main(args):
     examples_df.to_csv(metrics_dir / 'tokenizer_examples.csv', index=False)
 
     # Compute statistics
-    print("\n4. Computing statistics...")
+    print("\n5. Computing statistics...")
     train_stats = data_loader.get_statistics(train_df)
     val_stats = data_loader.get_statistics(val_df)
 
@@ -289,7 +398,7 @@ def main(args):
     stats_df.to_csv(metrics_dir / 'unlabeled_data_stats.csv', index=False)
 
     # Compute token lengths (PARALLELIZED)
-    print("\n5. Computing token length distributions...")
+    print("\n6. Computing token length distributions...")
     train_lengths = tokenizer.parallel_get_lengths(
         train_df['p_smiles'].tolist(),
         num_workers=num_workers,
@@ -329,7 +438,7 @@ def main(args):
     sa_stats.to_csv(metrics_dir / 'sa_stats.csv', index=False)
 
     # Create plots
-    print("\n6. Creating plots...")
+    print("\n7. Creating plots...")
     plotter = PlotUtils(
         figure_size=tuple(config['plotting']['figure_size']),
         font_size=config['plotting']['font_size'],
@@ -360,7 +469,7 @@ def main(args):
         style='step'
     )
 
-    print("\n7. Using shared split files directly...")
+    print("\n8. Using shared split files directly...")
     print(f"  Train split: {train_shared_path}")
     print(f"  Val split: {val_shared_path}")
 

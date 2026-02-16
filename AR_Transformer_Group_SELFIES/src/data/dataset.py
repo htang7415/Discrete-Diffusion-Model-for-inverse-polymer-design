@@ -25,7 +25,8 @@ class PolymerDataset(Dataset):
         max_length: Optional[int] = None,
         cache_tokenization: bool = False,
         pad_to_max_length: bool = True,
-        canonicalize: bool = True
+        canonicalize: bool = True,
+        pretokenized_group_selfies: bool = False
     ):
         """Initialize dataset.
 
@@ -37,6 +38,8 @@ class PolymerDataset(Dataset):
             cache_tokenization: Whether to pre-tokenize and cache all samples.
             pad_to_max_length: Whether to pad each sample to tokenizer.max_length.
             canonicalize: Whether to canonicalize before grammar encoding.
+            pretokenized_group_selfies: Whether smiles_col already stores Group SELFIES
+                strings from Step0 cache (bypasses RDKit/grammar encoding in __getitem__).
         """
         self.df = df.reset_index(drop=True)
         self.tokenizer = tokenizer
@@ -44,6 +47,7 @@ class PolymerDataset(Dataset):
         self.cache_tokenization = cache_tokenization
         self.pad_to_max_length = pad_to_max_length
         self.canonicalize = canonicalize
+        self.pretokenized_group_selfies = pretokenized_group_selfies
         self._cache: Dict[int, Dict[str, torch.Tensor]] = {}
 
         if max_length:
@@ -52,18 +56,30 @@ class PolymerDataset(Dataset):
         if cache_tokenization:
             self._pretokenize()
 
+    def _encode_group_selfies_value(self, gsf_value: str) -> Dict[str, List[int]]:
+        """Encode precomputed Group SELFIES string via lightweight parsing path."""
+        return self.tokenizer.encode_group_selfies(
+            gsf_value,
+            add_special_tokens=True,
+            padding=self.pad_to_max_length,
+            return_attention_mask=True
+        )
+
     def _pretokenize(self):
         """Pre-tokenize all samples and cache them."""
         print(f"Pre-tokenizing {len(self)} samples...")
         for idx in tqdm(range(len(self)), desc="Tokenizing"):
             smiles = self.df.iloc[idx][self.smiles_col]
-            encoded = self.tokenizer.encode(
-                smiles,
-                add_special_tokens=True,
-                padding=self.pad_to_max_length,
-                return_attention_mask=True,
-                canonicalize=self.canonicalize
-            )
+            if self.pretokenized_group_selfies:
+                encoded = self._encode_group_selfies_value(smiles)
+            else:
+                encoded = self.tokenizer.encode(
+                    smiles,
+                    add_special_tokens=True,
+                    padding=self.pad_to_max_length,
+                    return_attention_mask=True,
+                    canonicalize=self.canonicalize
+                )
             self._cache[idx] = {
                 'input_ids': torch.tensor(encoded['input_ids'], dtype=torch.long),
                 'attention_mask': torch.tensor(encoded['attention_mask'], dtype=torch.long)
@@ -80,13 +96,16 @@ class PolymerDataset(Dataset):
         smiles = self.df.iloc[idx][self.smiles_col]
 
         # Encode SMILES
-        encoded = self.tokenizer.encode(
-            smiles,
-            add_special_tokens=True,
-            padding=self.pad_to_max_length,
-            return_attention_mask=True,
-            canonicalize=self.canonicalize
-        )
+        if self.pretokenized_group_selfies:
+            encoded = self._encode_group_selfies_value(smiles)
+        else:
+            encoded = self.tokenizer.encode(
+                smiles,
+                add_special_tokens=True,
+                padding=self.pad_to_max_length,
+                return_attention_mask=True,
+                canonicalize=self.canonicalize
+            )
 
         return {
             'input_ids': torch.tensor(encoded['input_ids'], dtype=torch.long),

@@ -225,6 +225,38 @@ def _get_lengths_worker(smiles_batch, grammar, placeholder_smiles):
     return lengths
 
 
+def _encode_gsf_batch_worker(smiles_batch, grammar, placeholder_smiles, canonicalize):
+    """Worker function to convert p-SMILES to Group SELFIES strings."""
+    from rdkit import Chem, RDLogger
+
+    # Silence RDKit warnings in worker
+    RDLogger.DisableLog('rdApp.*')
+
+    encoded = []
+    for smiles in smiles_batch:
+        smiles_ph = smiles.replace("*", placeholder_smiles)
+        try:
+            mol = Chem.MolFromSmiles(smiles_ph)
+            if mol is None:
+                encoded.append(None)
+                continue
+
+            if canonicalize:
+                canon_smiles = Chem.MolToSmiles(mol, canonical=True)
+                mol = Chem.MolFromSmiles(canon_smiles)
+                if mol is None:
+                    encoded.append(None)
+                    continue
+
+            with _suppress_stdout_stderr():
+                gsf_string = grammar.full_encoder(mol)
+            encoded.append(gsf_string if gsf_string else None)
+        except Exception:
+            encoded.append(None)
+
+    return encoded
+
+
 def _verify_roundtrip_worker(smiles_batch, group_smiles, placeholder_smiles, max_failures=5):
     """Worker function to verify roundtrip for a batch of SMILES in parallel.
 
@@ -408,6 +440,29 @@ class GroupSELFIESTokenizer:
         except Exception:
             return None
 
+    def to_group_selfies(self, smiles: str, canonicalize: bool = True) -> Optional[str]:
+        """Convert a p-SMILES string to a Group SELFIES string."""
+        if self.grammar is None:
+            raise ValueError("Grammar not initialized. Call build_vocab_and_grammar first.")
+
+        smiles_ph = self._star_to_placeholder(smiles)
+        mol = self._smiles_to_mol(smiles_ph)
+        if mol is None:
+            return None
+
+        try:
+            if canonicalize:
+                canon_smiles = Chem.MolToSmiles(mol, canonical=True)
+                mol = Chem.MolFromSmiles(canon_smiles)
+                if mol is None:
+                    return None
+
+            with _suppress_stdout_stderr():
+                gsf_string = self.grammar.full_encoder(mol)
+            return gsf_string if gsf_string else None
+        except Exception:
+            return None
+
     def tokenize(self, smiles: str, canonicalize: bool = True) -> List[str]:
         """Tokenize a p-SMILES string to Group SELFIES tokens.
 
@@ -423,35 +478,19 @@ class GroupSELFIESTokenizer:
         if self.grammar is None:
             raise ValueError("Grammar not initialized. Call build_vocab_and_grammar first.")
 
-        # Replace * with placeholder
-        smiles_ph = self._star_to_placeholder(smiles)
-
-        # Convert to RDKit Mol
-        mol = self._smiles_to_mol(smiles_ph)
-        if mol is None:
-            # Return UNK token for invalid SMILES
+        gsf_string = self.to_group_selfies(smiles, canonicalize=canonicalize)
+        if not gsf_string:
             return ['[UNK]']
 
-        try:
-            # Pre-canonicalize for consistent encoding
-            # This helps improve roundtrip accuracy by ensuring the grammar
-            # always sees molecules in a consistent canonical form
-            if canonicalize:
-                canon_smiles = Chem.MolToSmiles(mol, canonical=True)
-                mol = Chem.MolFromSmiles(canon_smiles)
-                if mol is None:
-                    return ['[UNK]']
+        tokens = self._parse_gsf_string(gsf_string)
+        return tokens if tokens else ['[UNK]']
 
-            # Encode to Group SELFIES
-            with _suppress_stdout_stderr():
-                gsf_string = self.grammar.full_encoder(mol)
-
-            # Parse Group SELFIES string into tokens
-            # Group SELFIES format: [token1][token2][token3]...
-            tokens = self._parse_gsf_string(gsf_string)
-            return tokens
-        except Exception:
+    def tokenize_group_selfies(self, gsf_string: str) -> List[str]:
+        """Tokenize a precomputed Group SELFIES string."""
+        if not isinstance(gsf_string, str) or not gsf_string:
             return ['[UNK]']
+        tokens = self._parse_gsf_string(gsf_string)
+        return tokens if tokens else ['[UNK]']
 
     def _parse_gsf_string(self, gsf_string: str) -> List[str]:
         """Parse a Group SELFIES string into individual tokens.
@@ -938,6 +977,45 @@ class GroupSELFIESTokenizer:
 
         return all_lengths
 
+    def parallel_encode_group_selfies(
+        self,
+        smiles_list: List[str],
+        num_workers: int,
+        chunk_size: int = 1000,
+        canonicalize: bool = False,
+        verbose: bool = True
+    ) -> List[Optional[str]]:
+        """Convert p-SMILES list to Group SELFIES strings in parallel."""
+        if self.grammar is None:
+            raise ValueError("Grammar not initialized. Call build_vocab_and_grammar first.")
+        if num_workers <= 1:
+            iterator = tqdm(smiles_list, desc="Encoding Group SELFIES") if verbose else smiles_list
+            return [self.to_group_selfies(s, canonicalize=canonicalize) for s in iterator]
+
+        chunks = [
+            smiles_list[i:i + chunk_size]
+            for i in range(0, len(smiles_list), chunk_size)
+        ]
+
+        worker_func = partial(
+            _encode_gsf_batch_worker,
+            grammar=self.grammar,
+            placeholder_smiles=self.PLACEHOLDER_SMILES,
+            canonicalize=canonicalize,
+        )
+
+        encoded: List[Optional[str]] = []
+        with Pool(processes=num_workers) as pool:
+            if verbose:
+                results = pool.imap(worker_func, chunks)
+                for chunk_encoded in tqdm(results, total=len(chunks), desc="Encoding Group SELFIES"):
+                    encoded.extend(chunk_encoded)
+            else:
+                for chunk_encoded in pool.imap(worker_func, chunks):
+                    encoded.extend(chunk_encoded)
+
+        return encoded
+
     def _find_placeholder_token(self):
         """Find the token(s) representing the placeholder atom."""
         # Tokenize a simple molecule with placeholder
@@ -992,6 +1070,42 @@ class GroupSELFIESTokenizer:
         attention_mask = [1] * len(ids)
 
         # Padding
+        if padding:
+            pad_id = self.vocab['[PAD]']
+            pad_length = self.max_length - len(ids)
+            if pad_length > 0:
+                ids = ids + [pad_id] * pad_length
+                attention_mask = attention_mask + [0] * pad_length
+
+        result = {'input_ids': ids}
+        if return_attention_mask:
+            result['attention_mask'] = attention_mask
+
+        return result
+
+    def encode_group_selfies(
+        self,
+        gsf_string: str,
+        add_special_tokens: bool = True,
+        padding: bool = True,
+        return_attention_mask: bool = True
+    ) -> Dict[str, List[int]]:
+        """Encode a precomputed Group SELFIES string to token IDs."""
+        tokens = self.tokenize_group_selfies(gsf_string)
+
+        unk_id = self.vocab.get('[UNK]', 0)
+        ids = [self.vocab.get(token, unk_id) for token in tokens]
+
+        if add_special_tokens:
+            bos_id = self.vocab['[BOS]']
+            eos_id = self.vocab['[EOS]']
+            ids = [bos_id] + ids + [eos_id]
+
+        if len(ids) > self.max_length:
+            ids = ids[:self.max_length - 1] + [self.vocab['[EOS]']]
+
+        attention_mask = [1] * len(ids)
+
         if padding:
             pad_id = self.vocab['[PAD]']
             pad_length = self.max_length - len(ids)

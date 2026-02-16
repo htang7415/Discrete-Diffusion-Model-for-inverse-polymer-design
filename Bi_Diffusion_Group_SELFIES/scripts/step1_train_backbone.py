@@ -118,8 +118,34 @@ def main(args):
         print("\n2. Loading data...")
     repo_root = Path(__file__).resolve().parents[2]
     train_path, val_path = require_preprocessed_unlabeled_splits(repo_root)
-    train_df = pd.read_csv(train_path)
-    val_df = pd.read_csv(val_path)
+    gs_cfg = config.get('group_selfies', {})
+    cache_train_file = str(gs_cfg.get('step1_cache_train_file', 'train_group_selfies_cache.csv.gz'))
+    cache_val_file = str(gs_cfg.get('step1_cache_val_file', 'val_group_selfies_cache.csv.gz'))
+    cache_train_candidates = [
+        results_dir / cache_train_file,
+        Path(base_results_dir) / cache_train_file,
+    ]
+    cache_val_candidates = [
+        results_dir / cache_val_file,
+        Path(base_results_dir) / cache_val_file,
+    ]
+    train_cache_path = next((p for p in cache_train_candidates if p.exists()), None)
+    val_cache_path = next((p for p in cache_val_candidates if p.exists()), None)
+    using_group_selfies_cache = train_cache_path is not None and val_cache_path is not None
+
+    if using_group_selfies_cache:
+        train_df = pd.read_csv(train_cache_path, usecols=['p_smiles', 'group_selfies'])
+        val_df = pd.read_csv(val_cache_path, usecols=['p_smiles', 'group_selfies'])
+        if is_main_process:
+            print(f"Using precomputed train Group SELFIES cache: {train_cache_path}")
+            print(f"Using precomputed val Group SELFIES cache: {val_cache_path}")
+    else:
+        if is_main_process and ((train_cache_path is None) != (val_cache_path is None)):
+            print("Partial Group SELFIES cache found; falling back to shared p_smiles splits.")
+        train_df = pd.read_csv(train_path, usecols=['p_smiles'])
+        val_df = pd.read_csv(val_path, usecols=['p_smiles'])
+        if is_main_process:
+            print("Group SELFIES Step1 cache not found; using on-the-fly tokenization.")
 
     # Optionally subsample training data.
     train_fraction = config.get('data', {}).get('train_fraction', 1.0)
@@ -211,19 +237,24 @@ def main(args):
         cache_tokenization = False
 
     # Create datasets
+    dataset_smiles_col = 'group_selfies' if using_group_selfies_cache else 'p_smiles'
     train_dataset = PolymerDataset(
         train_df,
         tokenizer,
+        smiles_col=dataset_smiles_col,
         cache_tokenization=cache_tokenization,
         pad_to_max_length=not dynamic_padding,
-        canonicalize=tokenize_canonicalize
+        canonicalize=tokenize_canonicalize and not using_group_selfies_cache,
+        pretokenized_group_selfies=using_group_selfies_cache
     )
     val_dataset = PolymerDataset(
         val_df,
         tokenizer,
+        smiles_col=dataset_smiles_col,
         cache_tokenization=cache_tokenization,
         pad_to_max_length=not dynamic_padding,
-        canonicalize=tokenize_canonicalize
+        canonicalize=tokenize_canonicalize and not using_group_selfies_cache,
+        pretokenized_group_selfies=using_group_selfies_cache
     )
 
     active_collate_fn = collate_fn
@@ -289,7 +320,9 @@ def main(args):
                 f"Using length-bucket batching (bucket_size_multiplier={bucket_size_multiplier})."
             )
         print(f"DataLoader workers per rank: {num_workers}")
-        if not tokenize_canonicalize:
+        if using_group_selfies_cache:
+            print("Using precomputed Group SELFIES cache in Step1 (RDKit/grammar bypass in Dataset).")
+        elif not tokenize_canonicalize:
             print("Using fast Group SELFIES tokenization in Step1 (canonicalize=False).")
 
     # Create model

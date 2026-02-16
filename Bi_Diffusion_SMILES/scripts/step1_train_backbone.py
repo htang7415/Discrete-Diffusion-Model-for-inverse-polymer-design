@@ -116,8 +116,8 @@ def main(args):
         print("\n2. Loading data...")
     repo_root = Path(__file__).resolve().parents[2]
     train_path, val_path = require_preprocessed_unlabeled_splits(repo_root)
-    train_df = pd.read_csv(train_path)
-    val_df = pd.read_csv(val_path)
+    train_df = pd.read_csv(train_path, usecols=['p_smiles'])
+    val_df = pd.read_csv(val_path, usecols=['p_smiles'])
 
     # Optionally subsample training data (validation always full)
     train_fraction = config.get('data', {}).get('train_fraction', 1.0)
