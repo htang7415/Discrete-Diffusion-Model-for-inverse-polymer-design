@@ -13,11 +13,11 @@ data:
   max_samples_d1: null
   max_samples_d2: null
 
-alignment_views: ["smiles", "selfies", "group_selfies", "graph"]
+alignment_views: ["smiles", "smiles_bpe", "selfies", "group_selfies", "graph"]
 
 views:
   smiles_bpe:
-    enabled: false
+    enabled: true
   selfies:
     enabled: true
   group_selfies:
