@@ -1,0 +1,218 @@
+backbone:
+  dropout: 0.1
+  ffn_hidden_size: 1536
+  hidden_size: 384
+  max_position_embeddings: 256
+  num_heads: 8
+  num_layers: 8
+checkpointing:
+  save_best_only: true
+  save_last: false
+  save_periodic: false
+data:
+  property_test_ratio: 0.1
+  property_train_ratio: 0.8
+  property_val_ratio: 0.1
+  random_seed: 42
+  train_fraction: 1.0
+  unlabeled_train_ratio: 0.95
+  unlabeled_val_ratio: 0.05
+diffusion:
+  beta_max: 0.95
+  beta_min: 0.05
+  num_steps: 50
+group_selfies:
+  allow_full_grammar_build: false
+  allow_full_roundtrip_eval: false
+  auto_grammar_sample_cap: 1000000
+  auto_roundtrip_test_cap: 200000
+  diversity_selection: simple
+  grammar_sample_size: 1000000
+  max_groups: 50000
+  parallel:
+    chunk_size: 10000
+    enabled: true
+    num_workers: 0
+  roundtrip_test_size: 200000
+  step1_cache_batch_size: 200000
+  step1_cache_canonicalize: false
+  step1_cache_chunk_size: 10000
+  step1_cache_enabled: true
+  step1_cache_train_file: train_group_selfies_cache.csv.gz
+  step1_cache_val_file: val_group_selfies_cache.csv.gz
+hyperparameter_tuning:
+  enabled: true
+  metric: r2
+  n_trials: 5
+  search_space:
+    batch_size:
+    - 8
+    - 16
+    - 32
+    - 64
+    - 128
+    dropout:
+    - 0.1
+    - 0.2
+    - 0.3
+    finetune_last_layers_ratios:
+    - 0.0
+    - 0.25
+    - 0.5
+    - 0.75
+    - 1.0
+    learning_rate:
+    - 0.0004
+    - 0.0006
+    - 0.0008
+    - 0.001
+    neurons:
+    - 64
+    - 128
+    - 256
+    - 512
+    - 1024
+    num_layers:
+    - 3
+    - 4
+    - 5
+  tuning_epochs: 35
+  tuning_patience: 10
+inverse_design:
+  epsilon: 30.0
+  num_candidates: 100
+model_sizes:
+  large:
+    batch_size: 128
+    dropout: 0.1
+    ffn_hidden_size: 3840
+    gradient_accumulation_steps: 8
+    hidden_size: 960
+    learning_rate: 0.0001
+    max_position_embeddings: 256
+    max_steps: 200000
+    num_heads: 12
+    num_layers: 14
+    warmup_steps: 3000
+  medium:
+    batch_size: 128
+    dropout: 0.1
+    ffn_hidden_size: 2560
+    gradient_accumulation_steps: 4
+    hidden_size: 640
+    learning_rate: 0.0003
+    max_position_embeddings: 256
+    max_steps: 200000
+    num_heads: 10
+    num_layers: 10
+    warmup_steps: 2000
+  small:
+    batch_size: 128
+    dropout: 0.1
+    ffn_hidden_size: 1536
+    gradient_accumulation_steps: 4
+    hidden_size: 384
+    learning_rate: 0.0003
+    max_position_embeddings: 256
+    max_steps: 1000
+    num_heads: 6
+    num_layers: 6
+    warmup_steps: 1000
+  xl:
+    batch_size: 64
+    dropout: 0.1
+    ffn_hidden_size: 5120
+    gradient_accumulation_steps: 16
+    hidden_size: 1280
+    learning_rate: 0.0001
+    max_position_embeddings: 256
+    max_steps: 200000
+    num_heads: 16
+    num_layers: 20
+    warmup_steps: 4000
+optimization:
+  bucket_size_multiplier: 50
+  cache_tokenization: false
+  cache_tokenization_max_samples: 500000
+  compile_model: true
+  cudnn_benchmark: true
+  dynamic_padding: true
+  gradient_accumulation_steps: 4
+  length_bucket_sampler: false
+  num_workers: 0
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  tokenize_canonicalize: false
+  use_amp: true
+paths:
+  checkpoints_dir: results/checkpoints
+  data_dir: Data
+  figures_dir: results/figures
+  metrics_dir: results/metrics
+  polymer_file: Data/Polymer/SMiPoly_polymers.gz
+  property_dir: Data/Property
+  results_dir: results
+plotting:
+  dpi: 600
+  figure_size:
+  - 4.5
+  - 4.5
+  font_size: 12
+polymer_classes:
+  polyamide: '[#6](=O)-[#7]-[#6]'
+  polyester: '[#6](=O)-[#8]-[#6]'
+  polyether: '[#6]-[#8]-[#6]'
+  polyimide: '[#6](=O)-[#7]-[#6](=O)'
+  polyurethane: '[#8]-[#6](=O)-[#7]'
+property_head:
+  dropout: 0.1
+  hidden_sizes:
+  - 256
+  - 1024
+  - 128
+proxy_backbone:
+  dropout: 0.1
+  ffn_hidden_size: 1024
+  hidden_size: 256
+  max_position_embeddings: 256
+  num_heads: 4
+  num_layers: 4
+sampling:
+  batch_size: 256
+  max_length: 128
+  num_samples: 100
+  temperature: 1.0
+  top_k: 50
+  top_p: 0.9
+  use_constraints: true
+tokenizer:
+  max_length: 128
+  placeholder: '[I+3]'
+  special_tokens:
+    bos: '[BOS]'
+    eos: '[EOS]'
+    mask: '[MASK]'
+    pad: '[PAD]'
+    unk: '[UNK]'
+  type: group_selfies
+training_backbone:
+  batch_size: 256
+  eval_every: 10000
+  gradient_clip_norm: 1.0
+  learning_rate: 3e-4
+  max_steps: 200000
+  num_epochs: 50
+  save_every: 100000
+  val_max_samples: 100000
+  warmup_steps: 1000
+  weight_decay: 0.01
+training_property:
+  batch_size: 128
+  default_timestep: 1
+  finetune_last_layers: 6
+  freeze_backbone: true
+  learning_rate: 1e-3
+  num_epochs: 500
+  patience: 30
+  weight_decay: 0.01

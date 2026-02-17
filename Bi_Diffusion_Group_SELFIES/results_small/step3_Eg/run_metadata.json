@@ -1,0 +1,8 @@
+{
+  "config_path": "configs/config.yaml",
+  "seed": 42,
+  "deterministic": false,
+  "cuda_available": true,
+  "torch_version": "2.4.1+cu121",
+  "timestamp_utc": "2026-02-17T09:45:06Z"
+}

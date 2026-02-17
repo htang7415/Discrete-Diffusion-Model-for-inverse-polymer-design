@@ -1,0 +1,23 @@
+{
+  "jobs": {
+    "gsel_s_1_12691237": {
+      "job_duration_hours": 0.023333,
+      "job_end_time_utc": "2026-02-16T20:17:03Z",
+      "job_exit_status": 0,
+      "job_id": "12691237",
+      "job_name": "gsel_s_1",
+      "job_start_time_utc": "2026-02-16T20:15:39Z",
+      "model_size": "small",
+      "script": "slurm_script",
+      "steps": {
+        "step1_train_backbone": {
+          "duration_hours": 0.0225,
+          "end_time_utc": "2026-02-16T20:17:03Z",
+          "exit_status": 0,
+          "start_time_utc": "2026-02-16T20:15:42Z"
+        }
+      }
+    }
+  },
+  "latest_job_key": "gsel_s_1_12691237"
+}
