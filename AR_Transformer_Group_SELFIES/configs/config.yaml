@@ -53,7 +53,7 @@ group_selfies:
   step1_cache_enabled: true
   step1_cache_batch_size: 200000
   step1_cache_chunk_size: 10000
-  step1_cache_canonicalize: false
+  step1_cache_canonicalize: true
   step1_cache_train_file: "train_group_selfies_cache.csv.gz"
   step1_cache_val_file: "val_group_selfies_cache.csv.gz"
 

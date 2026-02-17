@@ -20,7 +20,7 @@ from collections import Counter
 
 from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
-from src.utils.chemistry import compute_sa_score, count_stars
+from src.utils.chemistry import canonicalize_smiles, compute_sa_score, count_stars
 from src.utils.model_scales import get_model_config, get_results_dir
 from src.data.tokenizer import GroupSELFIESTokenizer
 from src.model.backbone import DiffusionBackbone
@@ -122,6 +122,26 @@ def compute_smiles_constraint_metrics(smiles_list, method, representation, model
             "violation_rate": round(rate, 4),
         })
     return rows
+
+
+def canonicalize_generated_smiles(smiles_list):
+    """Canonicalize generated p-SMILES strings.
+
+    Returns canonical strings (fallback to original on failure) and number changed.
+    """
+    canonical = []
+    changed = 0
+    for smiles in smiles_list:
+        canon = canonicalize_smiles(smiles)
+        if canon is None:
+            canonical.append(smiles)
+            continue
+        canonical.append(canon)
+        if canon != smiles:
+            changed += 1
+    return canonical, changed
+
+
 def main(args):
     """Main function."""
     # Load config
@@ -232,9 +252,18 @@ def main(args):
 
     sampling_time_sec = time.time() - sampling_start
 
-    # Save generated samples
+    # Canonicalize generated outputs so exported samples match canonical training format.
+    raw_generated_smiles = generated_smiles
+    generated_smiles, num_canonicalized = canonicalize_generated_smiles(raw_generated_smiles)
+    print(f"Canonicalized {num_canonicalized}/{len(generated_smiles)} generated SMILES")
+
+    # Save generated samples (canonicalized); optionally keep raw strings for audit.
     samples_df = pd.DataFrame({'smiles': generated_smiles})
     samples_df.to_csv(metrics_dir / 'generated_samples.csv', index=False)
+    if num_canonicalized > 0:
+        pd.DataFrame({'smiles': raw_generated_smiles}).to_csv(
+            metrics_dir / 'generated_samples_raw.csv', index=False
+        )
     print(f"Saved {len(generated_smiles)} generated samples")
 
     # Evaluate
