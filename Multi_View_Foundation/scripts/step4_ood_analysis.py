@@ -2,6 +2,7 @@
 """F4: OOD analysis (initial implementation)."""
 
 import argparse
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -123,7 +124,12 @@ def main(args):
     else:
         use_faiss = bool(args.use_faiss)
     print(f"OOD settings: k={k}, use_faiss={use_faiss}")
-    ood_metrics = compute_ood_metrics_from_files(d1_path, d2_path, gen_path, k=k, use_faiss=use_faiss)
+    sig = inspect.signature(compute_ood_metrics_from_files)
+    if "use_faiss" in sig.parameters:
+        ood_metrics = compute_ood_metrics_from_files(d1_path, d2_path, gen_path, k=k, use_faiss=use_faiss)
+    else:
+        print("Warning: loaded compute_ood_metrics_from_files() does not support use_faiss; ignoring setting.")
+        ood_metrics = compute_ood_metrics_from_files(d1_path, d2_path, gen_path, k=k)
 
     row = {
         "method": "Multi_View_Foundation",

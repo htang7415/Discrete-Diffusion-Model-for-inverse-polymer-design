@@ -22,6 +22,11 @@ try:
 except Exception:  # pragma: no cover
     joblib = None
 
+try:
+    from sklearn.metrics import root_mean_squared_error
+except Exception:  # pragma: no cover
+    root_mean_squared_error = None
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BASE_DIR.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -371,9 +376,13 @@ def _resolve_property_columns(df: pd.DataFrame, property_name: str) -> tuple[str
 
 
 def _compute_metrics(y_true, y_pred) -> dict:
+    if root_mean_squared_error is not None:
+        rmse = float(root_mean_squared_error(y_true, y_pred))
+    else:
+        rmse = float(mean_squared_error(y_true, y_pred, squared=False))
     return {
         "mae": float(mean_absolute_error(y_true, y_pred)),
-        "rmse": float(mean_squared_error(y_true, y_pred, squared=False)),
+        "rmse": rmse,
         "r2": float(r2_score(y_true, y_pred)),
     }
 
