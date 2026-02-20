@@ -97,6 +97,7 @@ property:
 
 foundation_inverse:
   enabled: true
+  run_all_properties: true       # if true, F5 loops over property.files (or MVF_PROPERTY_LIST)
   candidate_source: "csv"  # csv|resample
   candidates_csv: ""
   smiles_column: ""
@@ -104,6 +105,10 @@ foundation_inverse:
   target: 300.0
   target_mode: "ge"  # window|ge|le
   epsilon: 20.0
+  # Optional per-property overrides used when run_all_properties=true.
+  targets: {}
+  target_modes: {}
+  epsilons: {}
   sampling_target: 100              # used when candidate_source=resample
   sampling_num_per_batch: 512       # candidates generated each outer batch
   sampling_batch_size: 128          # model decode batch size inside sampler
@@ -129,12 +134,17 @@ foundation_inverse:
 
 ood_aware_inverse:
   enabled: false
+  run_all_properties: true       # if true, F6 loops over property.files (or MVF_PROPERTY_LIST)
   candidate_scores_csv: ""      # default: results/step5_foundation_inverse/files/candidate_scores.csv
   encoder_view: ""              # fallback: foundation_inverse.encoder_view
   property: ""                  # fallback: foundation_inverse.property
   target: null                  # fallback: foundation_inverse.target
   target_mode: ""               # fallback: foundation_inverse.target_mode
   epsilon: null                 # fallback: foundation_inverse.epsilon
+  # Optional per-property overrides used when run_all_properties=true.
+  targets: {}
+  target_modes: {}
+  epsilons: {}
   top_k: 100
   property_weight: 0.7
   ood_weight: 0.3
