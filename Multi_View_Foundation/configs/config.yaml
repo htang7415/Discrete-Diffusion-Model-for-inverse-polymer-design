@@ -144,6 +144,22 @@ ood_aware_inverse:
   use_alignment: true
   alignment_checkpoint: ""
 
+chem_physics_analysis:
+  enabled: true
+  properties: ["Tg", "Tm", "Td", "Eg"]
+  # Optional path templates with {property}, e.g.:
+  # "results/step5_foundation_inverse/files/candidate_scores_{property}.csv"
+  candidate_scores_template: ""
+  topk_scores_template: ""
+  max_reference_samples: null
+  top_k: 100
+  generate_figures: true
+  # Optional per-property target config for physics panels.
+  # If omitted, Step7 uses property_hit/abs_error from input files when available.
+  targets: {}
+  target_modes: {}
+  epsilons: {}
+
 smiles_encoder:
   method_dir: "../Bi_Diffusion_SMILES"
   config_path: "../Bi_Diffusion_SMILES/configs/config.yaml"

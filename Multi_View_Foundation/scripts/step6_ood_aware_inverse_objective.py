@@ -296,6 +296,18 @@ def main(args):
 
     df = df.copy()
     df["prediction"] = pd.to_numeric(df["prediction"], errors="coerce")
+    if "property" in df.columns:
+        prop_series = df["property"].astype(str).str.strip()
+        match_mask = prop_series == property_name
+        if not bool(match_mask.any()):
+            seen = [x for x in sorted(prop_series.unique().tolist()) if x]
+            seen_preview = ",".join(seen[:6]) if seen else "(empty)"
+            raise RuntimeError(
+                "Candidate scores property mismatch: "
+                f"requested property={property_name} but file has {seen_preview}. "
+                "Use the correct candidate_scores_<PROPERTY>.csv for this run."
+            )
+        df = df.loc[match_mask].copy()
 
     d2_source = "existing"
     has_d2 = "d2_distance" in df.columns
@@ -354,11 +366,13 @@ def main(args):
     valid_df["d2_distance_objective"] = score_pack["d2_distance_norm"]
     valid_df["ood_aware_objective"] = score_pack["objective"]
     valid_df["ood_aware_rank"] = score_pack["objective_rank"]
+    valid_df["property"] = property_name
 
     order = np.argsort(valid_df["ood_aware_objective"].to_numpy(dtype=np.float32))
     k = min(top_k, len(order))
     top_idx = order[:k]
     top_df = valid_df.iloc[top_idx].copy()
+    top_df["property"] = property_name
 
     # Baselines for comparison: property-only and OOD-only ranking.
     prop_order = np.argsort(valid_df["property_error_objective"].to_numpy(dtype=np.float32))
@@ -406,15 +420,33 @@ def main(args):
         index=False,
     )
     save_csv(
+        valid_df.sort_values("ood_aware_rank"),
+        step_dirs["files_dir"] / f"ood_objective_scores_{property_name}.csv",
+        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"ood_objective_scores_{property_name}.csv"],
+        index=False,
+    )
+    save_csv(
         top_df.sort_values("ood_aware_rank"),
         step_dirs["files_dir"] / "ood_objective_topk.csv",
         legacy_paths=[results_dir / "step6_ood_aware_inverse" / "ood_objective_topk.csv"],
         index=False,
     )
     save_csv(
+        top_df.sort_values("ood_aware_rank"),
+        step_dirs["files_dir"] / f"ood_objective_topk_{property_name}.csv",
+        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"ood_objective_topk_{property_name}.csv"],
+        index=False,
+    )
+    save_csv(
         pd.DataFrame([metrics_row]),
         step_dirs["metrics_dir"] / "metrics_inverse_ood_objective.csv",
         legacy_paths=[results_dir / "metrics_inverse_ood_objective.csv"],
+        index=False,
+    )
+    save_csv(
+        pd.DataFrame([metrics_row]),
+        step_dirs["metrics_dir"] / f"metrics_inverse_ood_objective_{property_name}.csv",
+        legacy_paths=[results_dir / f"metrics_inverse_ood_objective_{property_name}.csv"],
         index=False,
     )
     save_json(
@@ -435,6 +467,25 @@ def main(args):
         },
         step_dirs["files_dir"] / "run_meta.json",
         legacy_paths=[results_dir / "step6_ood_aware_inverse" / "run_meta.json"],
+    )
+    save_json(
+        {
+            "encoder_view": encoder_view,
+            "property": property_name,
+            "target_value": float(target),
+            "target_mode": target_mode,
+            "epsilon": float(epsilon),
+            "top_k": int(k),
+            "normalization": normalization,
+            "objective_property_weight": float(score_pack["property_weight_norm"][0]),
+            "objective_ood_weight": float(score_pack["ood_weight_norm"][0]),
+            "ood_k": int(ood_k),
+            "use_alignment_for_ood": bool(use_alignment),
+            "candidate_scores_csv": str(candidate_scores_path),
+            "d2_distance_source": d2_source,
+        },
+        step_dirs["files_dir"] / f"run_meta_{property_name}.json",
+        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"run_meta_{property_name}.json"],
     )
 
     print(f"Saved metrics_inverse_ood_objective.csv to {results_dir}")
@@ -463,4 +514,3 @@ if __name__ == "__main__":
     parser.set_defaults(compute_d2_distance_if_missing=None)
     parser.add_argument("--recompute_d2_distance", action="store_true")
     main(parser.parse_args())
-

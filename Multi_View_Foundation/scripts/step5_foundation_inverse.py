@@ -1404,17 +1404,37 @@ def main(args):
     if d2_distance_scores is not None and len(scored_df) == len(d2_distance_scores):
         scored_df = scored_df.copy()
         scored_df["d2_distance"] = d2_distance_scores
+    if "property" not in scored_df.columns:
+        scored_df = scored_df.copy()
+    scored_df["property"] = args.property
+
+    accepted_df = scored_df[scored_df["accepted"] == True].copy() if "accepted" in scored_df.columns else scored_df[hits].copy()  # noqa: E712
+    if "property" not in accepted_df.columns:
+        accepted_df = accepted_df.copy()
+    accepted_df["property"] = args.property
+
     save_csv(
         scored_df,
         files_dir / "candidate_scores.csv",
         legacy_paths=[out_dir / "candidate_scores.csv"],
         index=False,
     )
-    accepted_df = scored_df[scored_df["accepted"] == True].copy() if "accepted" in scored_df.columns else scored_df[hits].copy()  # noqa: E712
+    save_csv(
+        scored_df,
+        files_dir / f"candidate_scores_{args.property}.csv",
+        legacy_paths=[out_dir / f"candidate_scores_{args.property}.csv"],
+        index=False,
+    )
     save_csv(
         accepted_df,
         files_dir / "accepted_candidates.csv",
         legacy_paths=[out_dir / "accepted_candidates.csv"],
+        index=False,
+    )
+    save_csv(
+        accepted_df,
+        files_dir / f"accepted_candidates_{args.property}.csv",
+        legacy_paths=[out_dir / f"accepted_candidates_{args.property}.csv"],
         index=False,
     )
 
@@ -1436,6 +1456,25 @@ def main(args):
         },
         files_dir / "run_meta.json",
         legacy_paths=[out_dir / "run_meta.json"],
+    )
+    save_json(
+        {
+            **source_meta,
+            "encoder_view": encoder_view,
+            "property": args.property,
+            "target_value": target_value,
+            "target_mode": target_mode,
+            "epsilon": epsilon,
+            "rerank_strategy": args.rerank_strategy,
+            "rerank_top_k": int(args.rerank_top_k),
+            "use_alignment": bool(args.use_alignment),
+            "n_generated": int(n_generated),
+            "n_structurally_valid": int(n_valid),
+            "n_scored": int(n_scored),
+            "n_hits": int(n_hits),
+        },
+        files_dir / f"run_meta_{args.property}.json",
+        legacy_paths=[out_dir / f"run_meta_{args.property}.json"],
     )
 
     print(f"Saved metrics_inverse.csv to {results_dir}")
