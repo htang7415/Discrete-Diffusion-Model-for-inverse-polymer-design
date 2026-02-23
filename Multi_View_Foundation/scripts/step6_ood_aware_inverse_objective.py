@@ -289,23 +289,24 @@ def _view_to_representation(view: str) -> str:
     return mapping.get(view, view)
 
 
-def _default_candidate_scores_path(results_dir: Path) -> Path:
-    preferred = results_dir / "step5_foundation_inverse" / "files" / "candidate_scores.csv"
-    if preferred.exists():
-        return preferred
-    legacy = results_dir / "step5_foundation_inverse" / "candidate_scores.csv"
-    if legacy.exists():
-        return legacy
-    return preferred
+def _candidate_scores_paths_for_property(results_dir: Path, property_name: str) -> list[Path]:
+    prop = _normalize_property_name(property_name)
+    candidates: list[Path] = []
+    if prop:
+        candidates.append(results_dir / "step5_foundation_inverse" / "files" / f"candidate_scores_{prop}.csv")
+        candidates.append(results_dir / "step5_foundation_inverse" / f"candidate_scores_{prop}.csv")
+    candidates.append(results_dir / "step5_foundation_inverse" / "files" / "candidate_scores.csv")
+    candidates.append(results_dir / "step5_foundation_inverse" / "candidate_scores.csv")
+    return candidates
 
 
-def _resolve_candidate_scores_path(args, cfg_step6: dict, results_dir: Path) -> Path:
-    if args.candidate_scores_csv:
-        return _resolve_path(args.candidate_scores_csv)
-    cfg_path = str(cfg_step6.get("candidate_scores_csv", "")).strip()
-    if cfg_path:
-        return _resolve_path(cfg_path)
-    return _default_candidate_scores_path(results_dir)
+def _resolve_candidate_scores_path(results_dir: Path, property_name: str) -> Path:
+    candidates = _candidate_scores_paths_for_property(results_dir, property_name)
+    for path in candidates:
+        if path.exists():
+            return path
+    # Return preferred path for error reporting if none exists.
+    return candidates[0]
 
 
 def _compute_d2_distance_single_view(
@@ -432,10 +433,6 @@ def main(args):
     save_config(config, results_dir / "config_used.yaml")
     save_config(config, step_dirs["files_dir"] / "config_used.yaml")
 
-    candidate_scores_path = _resolve_candidate_scores_path(args, cfg_step6, results_dir)
-    if not candidate_scores_path.exists():
-        raise FileNotFoundError(f"Candidate scores CSV not found: {candidate_scores_path}")
-
     encoder_view = _select_encoder_view(config, args.encoder_view, cfg_step6)
     if encoder_view not in SUPPORTED_VIEWS:
         raise ValueError(f"Unsupported encoder_view={encoder_view}. Supported: {', '.join(SUPPORTED_VIEWS)}")
@@ -450,6 +447,14 @@ def main(args):
     property_name = args.property
     if property_name is None:
         property_name = str(cfg_step6.get("property", "")).strip() or str(cfg_f5.get("property", "")).strip() or "property"
+
+    candidate_scores_path = _resolve_candidate_scores_path(results_dir, property_name)
+    if not candidate_scores_path.exists():
+        searched = [str(p) for p in _candidate_scores_paths_for_property(results_dir, property_name)]
+        raise FileNotFoundError(
+            "Candidate scores file not found for F6 auto-discovery. "
+            f"property={property_name}. searched={searched}"
+        )
 
     target = _to_float_or_none(args.target)
     if target is None:
@@ -789,7 +794,7 @@ def main(args):
         "ood_k": int(ood_k),
         "use_alignment_for_ood": bool(use_alignment),
         "d2_distance_source": d2_source,
-        "candidate_scores_csv": str(candidate_scores_path),
+        "candidate_scores_path": str(candidate_scores_path),
         "n_candidates_total": int(len(df)),
         "n_candidates_scored": int(len(valid_df)),
         "n_candidates_dropped": int(dropped),
@@ -866,7 +871,7 @@ def main(args):
             "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
             "use_alignment_for_ood": bool(use_alignment),
-            "candidate_scores_csv": str(candidate_scores_path),
+            "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
         step_dirs["files_dir"] / "run_meta.json",
@@ -895,7 +900,7 @@ def main(args):
             "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
             "use_alignment_for_ood": bool(use_alignment),
-            "candidate_scores_csv": str(candidate_scores_path),
+            "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
         step_dirs["files_dir"] / f"run_meta_{property_name}.json",
@@ -908,7 +913,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
-    parser.add_argument("--candidate_scores_csv", type=str, default=None)
     parser.add_argument("--encoder_view", type=str, default=None, choices=list(SUPPORTED_VIEWS))
     parser.add_argument("--ood_views", type=str, default=None, help="Comma-separated views or 'all' for multi-view OOD distance.")
     parser.add_argument("--property", type=str, default=None)

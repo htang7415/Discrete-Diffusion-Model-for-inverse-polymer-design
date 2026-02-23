@@ -168,7 +168,6 @@ foundation_inverse:
 ood_aware_inverse:
   enabled: true
   run_all_properties: true       # if true, F6 loops over property.files (or MVF_PROPERTY_LIST)
-  candidate_scores_csv: ""      # default: results/step5_foundation_inverse/files/candidate_scores.csv
   encoder_view: ""              # fallback anchor view for metadata/model_size if needed
   ood_views: "all"              # all|csv list; multi-view OOD distance aggregation uses mean over available views
   property: ""                  # fallback: foundation_inverse.property
