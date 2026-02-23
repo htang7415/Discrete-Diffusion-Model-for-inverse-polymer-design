@@ -153,6 +153,16 @@ def _to_float_or_none(value):
     return float(text)
 
 
+def _normalize_property_name(value) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    p = Path(text)
+    if p.suffix.lower() == ".csv":
+        text = p.stem
+    return text.strip()
+
+
 def _parse_properties(args, cfg: dict) -> List[str]:
     raw = args.properties if args.properties else cfg.get("properties", DEFAULT_PROPERTIES)
     if isinstance(raw, str):
@@ -232,6 +242,19 @@ def _cohens_d(x: np.ndarray, y: np.ndarray) -> float:
     y_std = float(np.std(y, ddof=1)) if y.size > 1 else 0.0
     pooled = np.sqrt(max((x_std * x_std + y_std * y_std) / 2.0, 1e-12))
     return float((x_mean - y_mean) / pooled)
+
+
+def _prediction_uncertainty_series(df: pd.DataFrame, property_name: str) -> pd.Series:
+    prop = _normalize_property_name(property_name)
+    candidates = [
+        "prediction_uncertainty",
+        f"pred_{prop}_std",
+        "prediction_std",
+    ]
+    for col in candidates:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series(np.nan, index=df.index, dtype=float)
 
 
 def _resolve_property_columns(df: pd.DataFrame, property_name: str) -> Tuple[str, str]:
@@ -1008,6 +1031,13 @@ def main(args):
         consistency_rate = float(physics_valid.mean()) if len(physics_valid) else np.nan
         mean_nn = float(pd.to_numeric(nn_df.get("nearest_tanimoto", pd.Series(dtype=float)), errors="coerce").mean()) if not nn_df.empty else np.nan
         mean_d2 = float(pd.to_numeric(topk_df.get("d2_distance", pd.Series(dtype=float)), errors="coerce").mean()) if "d2_distance" in topk_df.columns else np.nan
+        unc_series = _prediction_uncertainty_series(topk_df, prop)
+        mean_unc = float(unc_series.mean()) if unc_series.notna().any() else np.nan
+        if "conservative_objective" in topk_df.columns:
+            mean_obj = float(pd.to_numeric(topk_df["conservative_objective"], errors="coerce").mean())
+        else:
+            mean_obj = float(pd.to_numeric(topk_df.get("ood_aware_objective", pd.Series(dtype=float)), errors="coerce").mean()) if "ood_aware_objective" in topk_df.columns else np.nan
+        mean_constraint = float(pd.to_numeric(topk_df.get("constraint_violation_total", pd.Series(dtype=float)), errors="coerce").mean()) if "constraint_violation_total" in topk_df.columns else np.nan
         metric_rows.append(
             {
                 "method": "Multi_View_Foundation",
@@ -1019,6 +1049,9 @@ def main(args):
                 "mean_nn_similarity": round(mean_nn, 4) if np.isfinite(mean_nn) else np.nan,
                 "topk_hit_rate": round(topk_hit_rate, 4) if np.isfinite(topk_hit_rate) else np.nan,
                 "topk_mean_d2_distance": round(mean_d2, 6) if np.isfinite(mean_d2) else np.nan,
+                "topk_mean_prediction_uncertainty": round(mean_unc, 6) if np.isfinite(mean_unc) else np.nan,
+                "topk_mean_conservative_objective": round(mean_obj, 6) if np.isfinite(mean_obj) else np.nan,
+                "topk_mean_constraint_violation": round(mean_constraint, 6) if np.isfinite(mean_constraint) else np.nan,
                 "target_value": target,
                 "target_mode": target_mode,
                 "epsilon": epsilon,

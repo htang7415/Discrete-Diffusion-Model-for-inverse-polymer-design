@@ -115,7 +115,7 @@ property:
     enabled: true
     tuning_epochs: 50
     tuning_patience: 10
-    final_training_epochs: 200
+    final_training_epochs: 500
     metric: "r2"
     search_space:
       num_layers: [3, 4, 5]
@@ -140,6 +140,7 @@ foundation_inverse:
   sampling_num_per_batch: 512       # candidates generated each outer batch
   sampling_batch_size: 128          # model decode batch size inside sampler
   sampling_max_batches: 200         # hard stop to avoid infinite loops
+  proposal_views: "all"             # all|csv/list, proposal generation views used in round-robin
   sampling_temperature: null        # null => use method sampling.temperature
   sampling_num_atoms: null          # graph-only optional override
   # Optional comma-separated class filter. Supported classes:
@@ -151,11 +152,13 @@ foundation_inverse:
   require_novel: true
   require_unique: true
   max_sa: 4.0
+  committee_properties: null      # null => use property.files; F5 exports pred_<PROP>_{mean,std,...} for these
+  property_model_mode: "all"      # single|all; all = aggregate all available F3 models for this property
   property_model_path: ""
   rerank_strategy: "d2_distance"
   rerank_top_k: 100
   ood_k: 5
-  encoder_view: "smiles"  # selects F5 sampling + embedding view: smiles|smiles_bpe|selfies|group_selfies|graph
+  encoder_view: "smiles"  # F5 scoring/OOD embedding backbone (and fallback proposal view)
   use_alignment: true
   alignment_checkpoint: ""
 
@@ -174,8 +177,13 @@ ood_aware_inverse:
   target_modes: {}
   epsilons: {}
   top_k: 100
-  property_weight: 0.7
-  ood_weight: 0.3
+  property_weight: 0.6
+  ood_weight: 0.2
+  uncertainty_weight: 0.15      # penalize committee disagreement (prediction std)
+  constraint_weight: 0.05       # soft constraints on non-target properties
+  sa_weight: 0.0                # optional SA penalty term
+  constraint_properties: []     # empty => auto from available pred_<PROP>_mean + targets map
+  constraint_weights: {}        # optional per-property multipliers, e.g. {Tm: 2.0}
   normalization: "minmax"       # minmax|rank|none
   ood_k: 5
   compute_d2_distance_if_missing: true

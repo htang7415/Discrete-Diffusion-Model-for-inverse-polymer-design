@@ -99,6 +99,9 @@ DEFAULT_POLYMER_PATTERNS = {
 }
 
 DEFAULT_F5_RESAMPLE_SETTINGS = {
+    "property_model_mode": "all",  # single|all
+    "proposal_views": "all",  # all|<comma-separated views>
+    "committee_properties": None,  # defaults to property.files
     "sampling_target": 100,
     "sampling_num_per_batch": 512,
     "sampling_batch_size": 128,
@@ -187,6 +190,129 @@ def _select_encoder_view(config: dict, override: Optional[str]) -> str:
         if config.get(encoder_key, {}).get("method_dir"):
             return view
     return "smiles"
+
+
+def _normalize_property_name(value: Any) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    p = Path(text)
+    if p.suffix.lower() == ".csv":
+        text = p.stem
+    return text.strip()
+
+
+def _parse_property_names_from_files(values: Any) -> List[str]:
+    names: List[str] = []
+    if values is None:
+        return names
+    if isinstance(values, str):
+        raw_items = [x.strip() for x in values.split(",")]
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = [str(x).strip() for x in values]
+    else:
+        raw_items = [str(values).strip()]
+    for item in raw_items:
+        name = _normalize_property_name(item)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _resolve_committee_properties(config: dict, target_property: str, override: Optional[str]) -> List[str]:
+    f5_cfg = _f5_cfg(config)
+    names: List[str] = []
+
+    if override is not None:
+        names = _parse_property_names_from_files(override)
+    if not names:
+        names = _parse_property_names_from_files(f5_cfg.get("committee_properties"))
+    if not names:
+        names = _parse_property_names_from_files((config.get("property", {}) or {}).get("files"))
+
+    target_name = _normalize_property_name(target_property)
+    if target_name and target_name not in names:
+        names.insert(0, target_name)
+    if not names and target_name:
+        names = [target_name]
+    return names
+
+
+def _parse_view_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.lower() == "all":
+            return ["all"]
+        raw = [x.strip() for x in text.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw = [str(x).strip() for x in value]
+    else:
+        raw = [str(value).strip()]
+
+    views: List[str] = []
+    for item in raw:
+        if not item:
+            continue
+        low = item.lower()
+        if low == "all":
+            return ["all"]
+        if low not in SUPPORTED_VIEWS:
+            raise ValueError(f"Unsupported view '{item}'. Supported: {', '.join(SUPPORTED_VIEWS)}")
+        if low not in views:
+            views.append(low)
+    return views
+
+
+def _select_proposal_views(config: dict, override: Optional[str], fallback_view: str) -> List[str]:
+    f5_cfg = _f5_cfg(config)
+    raw = override if override is not None else f5_cfg.get("proposal_views", "all")
+    parsed = _parse_view_list(raw)
+
+    available: List[str] = []
+    ordered = []
+    for view in config.get("alignment_views", list(SUPPORTED_VIEWS)):
+        if view in SUPPORTED_VIEWS and view not in ordered:
+            ordered.append(view)
+    for view in SUPPORTED_VIEWS:
+        if view not in ordered:
+            ordered.append(view)
+    for view in ordered:
+        if not _is_view_enabled(config, view):
+            continue
+        encoder_key = VIEW_SPECS[view]["encoder_key"]
+        if not config.get(encoder_key, {}).get("method_dir"):
+            continue
+        available.append(view)
+
+    if parsed == ["all"] or not parsed:
+        selected = list(available)
+    else:
+        selected = []
+        for view in parsed:
+            if view not in available:
+                raise ValueError(
+                    f"proposal view '{view}' is unavailable (disabled or encoder config missing)."
+                )
+            if view not in selected:
+                selected.append(view)
+
+    if fallback_view not in selected:
+        selected.append(fallback_view)
+    if not selected:
+        selected = [fallback_view]
+    return selected
+
+
+def _resolve_view_device(config: dict, view: str) -> str:
+    encoder_cfg = config.get(VIEW_SPECS[view]["encoder_key"], {})
+    device = str(encoder_cfg.get("device", "auto")).strip() or "auto"
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
 
 
 def _load_module(module_name: str, path: Path):
@@ -590,6 +716,30 @@ def _default_property_model_path(results_dir: Path, property_name: str, view: st
     return model_dir / f"{property_name}_{view}_mlp.pt"
 
 
+def _discover_property_model_paths(results_dir: Path, property_name: str) -> Dict[str, Path]:
+    model_dir = results_dir / "step3_property"
+    files_dir = model_dir / "files"
+    discovered: Dict[str, Path] = {}
+
+    for view in SUPPORTED_VIEWS:
+        if view == "smiles":
+            filename = f"{property_name}_mlp.pt"
+        else:
+            filename = f"{property_name}_{view}_mlp.pt"
+        candidates = [files_dir / filename, model_dir / filename]
+        model_path = next((p for p in candidates if p.exists()), None)
+        if model_path is not None:
+            discovered[view] = model_path
+
+    mv_filename = f"{property_name}_multiview_mean_mlp.pt"
+    mv_candidates = [files_dir / mv_filename, model_dir / mv_filename]
+    mv_path = next((p for p in mv_candidates if p.exists()), None)
+    if mv_path is not None:
+        discovered["multiview_mean"] = mv_path
+
+    return discovered
+
+
 class _PropertyMLP(torch.nn.Module):
     def __init__(self, input_dim: int, num_layers: int, neurons: int, dropout: float):
         super().__init__()
@@ -646,6 +796,145 @@ def _load_property_model(model_path: Path):
     import pickle
     with open(model_path, "rb") as f:
         return pickle.load(f)
+
+
+def _build_prediction_columns_from_all_models(
+    *,
+    config: dict,
+    results_dir: Path,
+    smiles_list: List[str],
+    model_paths: Dict[str, Path],
+    use_alignment: bool,
+    alignment_checkpoint: Optional[str],
+) -> Dict[str, Any]:
+    n = len(smiles_list)
+    if n == 0:
+        return {
+            "prediction_by_model": {},
+            "prediction_ensemble": np.zeros((0,), dtype=np.float32),
+            "prediction_std": np.zeros((0,), dtype=np.float32),
+            "prediction_valid_count": np.zeros((0,), dtype=np.int64),
+            "model_order": [],
+            "models_used": {},
+        }
+
+    view_cache: Dict[str, Dict[str, Any]] = {}
+    prediction_by_model: Dict[str, np.ndarray] = {}
+    models_used: Dict[str, str] = {}
+
+    def _view_pack(view: str) -> Dict[str, Any]:
+        cached = view_cache.get(view)
+        if cached is not None:
+            return cached
+
+        encoder_cfg = config.get(VIEW_SPECS[view]["encoder_key"], {})
+        device = encoder_cfg.get("device", "auto")
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        assets = _load_view_assets(config=config, view=view, device=device)
+        embeddings, kept_indices = _embed_candidates(
+            view=view,
+            smiles_list=smiles_list,
+            assets=assets,
+            device=device,
+        )
+        if embeddings.size and use_alignment:
+            view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
+            alignment_model = _load_alignment_model(
+                results_dir=results_dir,
+                view_dims={view: view_hidden_dim},
+                config=config,
+                checkpoint_override=alignment_checkpoint,
+            )
+            if alignment_model is None:
+                raise FileNotFoundError("Alignment checkpoint not found for all-model F5 scoring with use_alignment=True")
+            projection_device = "cuda" if torch.cuda.is_available() else "cpu"
+            embeddings = _project_embeddings(alignment_model, view, embeddings, device=projection_device)
+        packed = {
+            "embeddings": embeddings,
+            "kept_indices": [int(i) for i in kept_indices],
+        }
+        view_cache[view] = packed
+        return packed
+
+    # Per-view models
+    for view in SUPPORTED_VIEWS:
+        model_path = model_paths.get(view)
+        if model_path is None:
+            continue
+        packed = _view_pack(view)
+        pred_col = np.full((n,), np.nan, dtype=np.float32)
+        if packed["embeddings"].size and packed["kept_indices"]:
+            model = _load_property_model(model_path)
+            preds = np.asarray(model.predict(packed["embeddings"]), dtype=np.float32).reshape(-1)
+            for local_i, global_i in enumerate(packed["kept_indices"]):
+                pred_col[global_i] = preds[local_i]
+        prediction_by_model[view] = pred_col
+        models_used[view] = str(model_path)
+
+    # Multiview-mean model
+    mv_path = model_paths.get("multiview_mean")
+    if mv_path is not None:
+        available_views = [v for v in SUPPORTED_VIEWS if v in prediction_by_model]
+        common_indices = None
+        for view in available_views:
+            idx_set = set(view_cache[view]["kept_indices"])
+            common_indices = idx_set if common_indices is None else common_indices.intersection(idx_set)
+        common = sorted(common_indices) if common_indices else []
+
+        pred_col = np.full((n,), np.nan, dtype=np.float32)
+        if common:
+            dim_set = set()
+            fused_blocks = []
+            for view in available_views:
+                packed = view_cache[view]
+                idx_to_row = {idx: row_i for row_i, idx in enumerate(packed["kept_indices"])}
+                block = packed["embeddings"][[idx_to_row[i] for i in common]]
+                fused_blocks.append(block)
+                dim_set.add(int(block.shape[1]))
+            if len(dim_set) == 1:
+                fused = np.mean(np.stack(fused_blocks, axis=0), axis=0)
+                mv_model = _load_property_model(mv_path)
+                preds = np.asarray(mv_model.predict(fused), dtype=np.float32).reshape(-1)
+                for local_i, global_i in enumerate(common):
+                    pred_col[global_i] = preds[local_i]
+            else:
+                print(
+                    "[F5] Warning: skipping multiview_mean model due to embedding-dimension mismatch "
+                    f"across views: {sorted(dim_set)}"
+                )
+
+        prediction_by_model["multiview_mean"] = pred_col
+        models_used["multiview_mean"] = str(mv_path)
+
+    if not prediction_by_model:
+        return {
+            "prediction_by_model": {},
+            "prediction_ensemble": np.full((n,), np.nan, dtype=np.float32),
+            "prediction_std": np.full((n,), np.nan, dtype=np.float32),
+            "prediction_valid_count": np.zeros((n,), dtype=np.int64),
+            "model_order": [],
+            "models_used": {},
+        }
+
+    ordered = [k for k in list(SUPPORTED_VIEWS) + ["multiview_mean"] if k in prediction_by_model]
+    pred_matrix = np.column_stack([prediction_by_model[k] for k in ordered]).astype(np.float32, copy=False)
+    valid_counts = np.sum(np.isfinite(pred_matrix), axis=1)
+    with np.errstate(invalid="ignore"):
+        ensemble = np.nanmean(pred_matrix, axis=1).astype(np.float32, copy=False)
+    with np.errstate(invalid="ignore"):
+        ensemble_std = np.nanstd(pred_matrix, axis=1).astype(np.float32, copy=False)
+    ensemble[valid_counts == 0] = np.nan
+    ensemble_std[valid_counts == 0] = np.nan
+
+    return {
+        "prediction_by_model": prediction_by_model,
+        "prediction_ensemble": ensemble,
+        "prediction_std": ensemble_std,
+        "prediction_valid_count": valid_counts.astype(np.int64, copy=False),
+        "model_order": ordered,
+        "models_used": models_used,
+    }
 
 
 def _check_validity(smiles: str) -> bool:
@@ -935,9 +1224,10 @@ def _resample_candidates_until_target(
     *,
     config: dict,
     args,
-    view: str,
-    assets: dict,
-    device: str,
+    proposal_views: List[str],
+    scoring_view: str,
+    scoring_assets: dict,
+    scoring_device: str,
     property_model,
     alignment_model,
     training_set: set,
@@ -979,6 +1269,8 @@ def _resample_candidates_until_target(
         raise ValueError("sampling_num_per_batch and sampling_batch_size must both be > 0")
     if sampling_max_batches <= 0:
         raise ValueError("sampling_max_batches must be > 0")
+    if not proposal_views:
+        raise ValueError("proposal_views must be non-empty.")
 
     patterns = config.get("polymer_classes") or f5_cfg.get("polymer_class_patterns") or DEFAULT_POLYMER_PATTERNS
     target_classes = _parse_target_classes(target_class)
@@ -987,10 +1279,10 @@ def _resample_candidates_until_target(
         if class_name not in compiled_patterns:
             raise ValueError(f"Unknown target class '{class_name}'. Available classes: {sorted(compiled_patterns.keys())}")
 
-    generator = _create_generator(
-        view=view,
-        assets=assets,
-        device=device,
+    scoring_generator = _create_generator(
+        view=scoring_view,
+        assets=scoring_assets,
+        device=scoring_device,
         sampling_temperature=sampling_temperature,
         sampling_num_atoms=sampling_num_atoms,
     )
@@ -1003,12 +1295,52 @@ def _resample_candidates_until_target(
     generated_smiles_all: List[str] = []
     seen_keys: set = set()
     accepted = 0
+    active_generator_view: Optional[str] = None
+    active_generator_assets: Optional[dict] = None
+    active_generator: Optional[dict] = None
+
+    def _get_proposal_generator(view: str) -> dict:
+        nonlocal active_generator_view, active_generator_assets, active_generator
+        if view == scoring_view:
+            return scoring_generator
+        if active_generator_view == view and active_generator is not None:
+            return active_generator
+
+        # Keep at most one non-scoring proposal generator resident to reduce peak memory.
+        if active_generator_assets is not None:
+            try:
+                active_generator_assets.get("backbone").to("cpu")
+            except Exception:
+                pass
+            active_generator_assets = None
+            active_generator = None
+            active_generator_view = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        proposal_device = _resolve_view_device(config, view)
+        proposal_assets = _load_view_assets(config=config, view=view, device=proposal_device)
+        proposal_generator = _create_generator(
+            view=view,
+            assets=proposal_assets,
+            device=proposal_device,
+            sampling_temperature=sampling_temperature,
+            sampling_num_atoms=sampling_num_atoms,
+        )
+        active_generator_assets = proposal_assets
+        active_generator = proposal_generator
+        active_generator_view = view
+        return proposal_generator
 
     for batch_idx in range(1, sampling_max_batches + 1):
         if accepted >= sampling_target:
             break
 
+        proposal_view = proposal_views[(batch_idx - 1) % len(proposal_views)]
+        generator = _get_proposal_generator(proposal_view)
         batch_smiles = _sample_batch_from_generator(generator, sampling_num_per_batch, sampling_batch_size)
+        stats[f"n_generated_{proposal_view}"] += len(batch_smiles)
+        stats[f"n_batches_{proposal_view}"] += 1
         stats["n_generated"] += len(batch_smiles)
         generated_smiles_all.extend(batch_smiles)
         if not batch_smiles:
@@ -1066,6 +1398,7 @@ def _resample_candidates_until_target(
                 {
                     "smiles": text,
                     "canonical_smiles": canonical_key,
+                    "proposal_view": proposal_view,
                     "is_valid": bool(is_valid),
                     "is_two_star": bool(is_two_star),
                     "is_novel": bool(is_novel),
@@ -1085,17 +1418,17 @@ def _resample_candidates_until_target(
             continue
 
         embeddings, kept_indices = _embed_candidates(
-            view=view,
+            view=scoring_view,
             smiles_list=prefilter_smiles,
-            assets=assets,
-            device=device,
+            assets=scoring_assets,
+            device=scoring_device,
         )
         stats["n_prefilter"] += len(prefilter_smiles)
         if len(kept_indices) < len(prefilter_smiles):
             stats["reject_embed"] += len(prefilter_smiles) - len(kept_indices)
 
         if embeddings.size and alignment_model is not None:
-            embeddings = _project_embeddings(alignment_model, view, embeddings, device=projection_device)
+            embeddings = _project_embeddings(alignment_model, scoring_view, embeddings, device=projection_device)
 
         if embeddings.size == 0:
             print(
@@ -1129,11 +1462,19 @@ def _resample_candidates_until_target(
                 break
 
         print(
-            f"[F5 resample] batch={batch_idx} generated={len(batch_smiles)} prefilter={len(prefilter_smiles)} "
+            f"[F5 resample] batch={batch_idx} view={proposal_view} generated={len(batch_smiles)} prefilter={len(prefilter_smiles)} "
             f"scored={len(kept_meta)} accepted={accepted}/{sampling_target}"
         )
         if accepted >= sampling_target:
             break
+
+    if active_generator_assets is not None:
+        try:
+            active_generator_assets.get("backbone").to("cpu")
+        except Exception:
+            pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     scored_df = pd.DataFrame(scored_records)
     if scored_df.empty:
@@ -1155,6 +1496,8 @@ def _resample_candidates_until_target(
         "sampling_num_per_batch": sampling_num_per_batch,
         "sampling_batch_size": sampling_batch_size,
         "sampling_max_batches": sampling_max_batches,
+        "proposal_views": list(proposal_views),
+        "scoring_view": scoring_view,
         "target_classes": target_classes,
         "require_validity": require_validity,
         "require_two_stars": require_two_stars,
@@ -1169,6 +1512,7 @@ def _resample_candidates_until_target(
 
 def main(args):
     config = load_config(args.config)
+    f5_cfg = _f5_cfg(config)
     results_dir = _resolve_path(config["paths"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
     step_dirs = ensure_step_dirs(results_dir, "step5_foundation_inverse")
@@ -1176,12 +1520,11 @@ def main(args):
     save_config(config, step_dirs["files_dir"] / "config_used.yaml")
 
     encoder_view = _select_encoder_view(config, args.encoder_view)
-    encoder_cfg = config.get(VIEW_SPECS[encoder_view]["encoder_key"], {})
-    device = encoder_cfg.get("device", "auto")
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    proposal_views = _select_proposal_views(config, args.proposal_views, fallback_view=encoder_view)
+    committee_properties = _resolve_committee_properties(config, args.property, args.committee_properties)
 
-    assets = _load_view_assets(config=config, view=encoder_view, device=device)
+    encoder_device = _resolve_view_device(config, encoder_view)
+    assets = _load_view_assets(config=config, view=encoder_view, device=encoder_device)
     view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
 
     alignment_model = None
@@ -1190,6 +1533,15 @@ def main(args):
         alignment_model = _load_alignment_model(results_dir, view_dims, config, args.alignment_checkpoint)
         if alignment_model is None:
             raise FileNotFoundError("Alignment checkpoint not found for --use_alignment")
+
+    property_model_mode = args.property_model_mode
+    if property_model_mode is None:
+        property_model_mode = str(f5_cfg.get("property_model_mode", "all"))
+    property_model_mode = str(property_model_mode).strip().lower()
+    if property_model_mode not in {"single", "all"}:
+        raise ValueError("property_model_mode must be one of: single|all")
+    if property_model_mode == "all" and args.property_model_path:
+        raise ValueError("--property_model_path is only supported when property_model_mode=single")
 
     model_path = args.property_model_path
     if model_path is None:
@@ -1213,9 +1565,10 @@ def main(args):
     sampled = _resample_candidates_until_target(
         config=config,
         args=args,
-        view=encoder_view,
-        assets=assets,
-        device=device,
+        proposal_views=proposal_views,
+        scoring_view=encoder_view,
+        scoring_assets=assets,
+        scoring_device=encoder_device,
         property_model=model,
         alignment_model=alignment_model,
         training_set=training_set,
@@ -1233,6 +1586,8 @@ def main(args):
             "sampling_num_per_batch": int(sampled["sampling_num_per_batch"]),
             "sampling_batch_size": int(sampled["sampling_batch_size"]),
             "sampling_max_batches": int(sampled["sampling_max_batches"]),
+            "proposal_views": sampled["proposal_views"],
+            "scoring_view": sampled["scoring_view"],
             "target_classes": sampled["target_classes"],
             "require_validity": bool(sampled["require_validity"]),
             "require_two_stars": bool(sampled["require_two_stars"]),
@@ -1243,6 +1598,115 @@ def main(args):
             "sampling_completed": bool(sampled["completed"]),
         }
     )
+
+    # Optional all-model aggregation:
+    # score with all available F3 property heads across committee properties,
+    # then use target-property committee mean/std for acceptance.
+    if property_model_mode == "all" and not scored_df.empty:
+        committee_models_used: Dict[str, Dict[str, str]] = {}
+        committee_model_order: Dict[str, List[str]] = {}
+        missing_properties: List[str] = []
+        smiles_for_committee = scored_df["smiles"].astype(str).tolist()
+        for committee_prop in committee_properties:
+            all_model_paths = _discover_property_model_paths(results_dir, committee_prop)
+            if committee_prop == args.property and encoder_view not in all_model_paths and Path(model_path).exists():
+                # Keep backward compatibility for primary scoring model location.
+                all_model_paths[encoder_view] = Path(model_path)
+            if not all_model_paths:
+                if committee_prop == args.property:
+                    raise FileNotFoundError(
+                        f"No F3 property models found for target property={args.property} under {results_dir / 'step3_property'}"
+                    )
+                missing_properties.append(committee_prop)
+                continue
+
+            pred_pack = _build_prediction_columns_from_all_models(
+                config=config,
+                results_dir=results_dir,
+                smiles_list=smiles_for_committee,
+                model_paths=all_model_paths,
+                use_alignment=bool(args.use_alignment),
+                alignment_checkpoint=args.alignment_checkpoint,
+            )
+            if not pred_pack["prediction_by_model"]:
+                if committee_prop == args.property:
+                    raise RuntimeError(
+                        f"Failed to compute committee predictions for target property={args.property}."
+                    )
+                missing_properties.append(committee_prop)
+                continue
+
+            for model_name, pred_values in pred_pack["prediction_by_model"].items():
+                scored_df[f"pred_{committee_prop}_{model_name}"] = pred_values
+                if committee_prop == args.property:
+                    # Preserve legacy target-property column names.
+                    scored_df[f"prediction_{model_name}"] = pred_values
+
+            scored_df[f"pred_{committee_prop}_mean"] = np.asarray(pred_pack["prediction_ensemble"], dtype=np.float32).reshape(-1)
+            scored_df[f"pred_{committee_prop}_std"] = np.asarray(pred_pack["prediction_std"], dtype=np.float32).reshape(-1)
+            scored_df[f"pred_{committee_prop}_n_models"] = np.asarray(pred_pack["prediction_valid_count"], dtype=np.int64).reshape(-1)
+            committee_models_used[committee_prop] = pred_pack["models_used"]
+            committee_model_order[committee_prop] = [str(x) for x in pred_pack.get("model_order", [])]
+
+        target_mean_col = f"pred_{args.property}_mean"
+        target_std_col = f"pred_{args.property}_std"
+        target_count_col = f"pred_{args.property}_n_models"
+        if target_mean_col not in scored_df.columns:
+            raise RuntimeError(
+                f"Missing target committee prediction column '{target_mean_col}'. "
+                "Ensure step3 models exist for the target property."
+            )
+
+        ensemble_pred = pd.to_numeric(scored_df[target_mean_col], errors="coerce").to_numpy(dtype=np.float32)
+        scored_df["prediction"] = ensemble_pred
+        if target_std_col in scored_df.columns:
+            scored_df["prediction_std"] = pd.to_numeric(scored_df[target_std_col], errors="coerce")
+        else:
+            scored_df["prediction_std"] = np.nan
+        if target_count_col in scored_df.columns:
+            scored_df["prediction_n_models"] = pd.to_numeric(scored_df[target_count_col], errors="coerce")
+        else:
+            scored_df["prediction_n_models"] = np.nan
+
+        scored_df["abs_error"] = np.abs(ensemble_pred - target_value)
+        valid_pred = np.isfinite(ensemble_pred)
+        hit_mask = _compute_hits(ensemble_pred, target_value, epsilon, target_mode)
+        hit_mask = np.logical_and(hit_mask, valid_pred)
+        scored_df["property_hit"] = hit_mask
+        scored_df["accepted"] = hit_mask
+
+        source_meta.update(
+            {
+                "property_model_mode": "all",
+                "prediction_aggregation": "mean",
+                "committee_properties_requested": committee_properties,
+                "committee_properties_scored": sorted(committee_models_used.keys()),
+                "committee_properties_missing": missing_properties,
+                "property_models_used": committee_models_used,
+                "property_model_order": committee_model_order,
+                "target_prediction_column": target_mean_col,
+                "target_uncertainty_column": target_std_col,
+            }
+        )
+    elif property_model_mode == "all":
+        source_meta.update(
+            {
+                "property_model_mode": "all",
+                "prediction_aggregation": "mean",
+                "committee_properties_requested": committee_properties,
+                "committee_properties_scored": [],
+                "committee_properties_missing": committee_properties,
+                "property_models_used": {},
+                "property_model_order": {},
+            }
+        )
+    else:
+        source_meta.update(
+            {
+                "property_model_mode": "single",
+                "property_models_used": {encoder_view: str(Path(model_path))},
+            }
+        )
 
     elapsed_sec = time.time() - t0
     if scored_df.empty:
@@ -1413,6 +1877,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
     parser.add_argument("--encoder_view", type=str, default=None, choices=list(SUPPORTED_VIEWS))
+    parser.add_argument("--proposal_views", type=str, default=None, help="Comma list or 'all' for F5 proposal generation views.")
     parser.add_argument("--property", type=str, required=True)
     parser.add_argument("--target", type=float, required=True)
     parser.add_argument("--target_mode", type=str, default="window", choices=["window", "ge", "le"])
@@ -1425,6 +1890,8 @@ if __name__ == "__main__":
     parser.add_argument("--sampling_num_atoms", type=int, default=None)
     parser.add_argument("--target_class", type=str, default=None)
     parser.add_argument("--max_sa", type=float, default=None)
+    parser.add_argument("--property_model_mode", type=str, default=None, choices=["single", "all"])
+    parser.add_argument("--committee_properties", type=str, default=None, help="Comma list for committee property exports; defaults to property.files.")
     parser.add_argument("--property_model_path", type=str, default=None)
     parser.add_argument("--rerank_strategy", type=str, default="d2_distance")
     parser.add_argument("--rerank_top_k", type=int, default=100)
