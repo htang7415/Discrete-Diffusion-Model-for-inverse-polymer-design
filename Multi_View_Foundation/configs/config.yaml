@@ -21,6 +21,8 @@
 #   ood_aware_inverse.*
 # F7 chemistry/physics analysis:
 #   chem_physics_analysis.*
+# F8 paper package export:
+#   paper_results.*
 
 # F0 shared paths/data for paired dataset construction
 paths:
@@ -102,7 +104,7 @@ ood:
 
 # F3 property-head args
 property:
-  files: ["Tg.csv", "Eg.csv", "Tm.csv", "Td.csv"]
+  files: ["Tg.csv", "Tm.csv", "Td.csv", "Eg.csv"]
   max_samples: null
   train_ratio: 0.8
   val_ratio: 0.1
@@ -152,13 +154,13 @@ foundation_inverse:
   require_novel: true
   require_unique: true
   max_sa: 4.0
-  committee_properties: null      # null => use property.files; F5 exports pred_<PROP>_{mean,std,...} for these
+  committee_properties: ["Tg", "Tm", "Td", "Eg"]  # explicit committee export list for F5/F6/F7 workflow
   property_model_mode: "all"      # single|all; all = aggregate all available F3 models for this property
   property_model_path: ""
   rerank_strategy: "d2_distance"
   rerank_top_k: 100
   ood_k: 5
-  encoder_view: "smiles"  # F5 scoring/OOD embedding backbone (and fallback proposal view)
+  encoder_view: "smiles"  # F5 scoring backbone + fallback proposal view
   use_alignment: true
   alignment_checkpoint: ""
 
@@ -167,7 +169,8 @@ ood_aware_inverse:
   enabled: true
   run_all_properties: true       # if true, F6 loops over property.files (or MVF_PROPERTY_LIST)
   candidate_scores_csv: ""      # default: results/step5_foundation_inverse/files/candidate_scores.csv
-  encoder_view: ""              # fallback: foundation_inverse.encoder_view
+  encoder_view: ""              # fallback anchor view for metadata/model_size if needed
+  ood_views: "all"              # all|csv list; multi-view OOD distance aggregation uses mean over available views
   property: ""                  # fallback: foundation_inverse.property
   target: null                  # fallback: foundation_inverse.target
   target_mode: ""               # fallback: foundation_inverse.target_mode (window/ge/le)
@@ -206,6 +209,13 @@ chem_physics_analysis:
   targets: {}
   target_modes: {}
   epsilons: {}
+
+# F8 paper package export args (collect F1-F7 into paper-ready structure)
+paper_results:
+  enabled: true
+  output_dir: "paper_package"    # relative path resolves under results_dir
+  include_large_csv: true        # include candidate_scores / full OOD score tables
+  include_figures: true
 
 # F1 backbone encoder args (used by F1/F5/F6)
 smiles_encoder:

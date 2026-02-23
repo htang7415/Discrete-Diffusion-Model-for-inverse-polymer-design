@@ -104,6 +104,35 @@ def _parse_property_list(value) -> list[str]:
     return props
 
 
+def _parse_view_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.lower() == "all":
+            return ["all"]
+        raw = [x.strip() for x in text.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw = [str(x).strip() for x in value]
+    else:
+        raw = [str(value).strip()]
+
+    views: list[str] = []
+    for item in raw:
+        if not item:
+            continue
+        low = item.lower()
+        if low == "all":
+            return ["all"]
+        if low not in SUPPORTED_VIEWS:
+            raise ValueError(f"Unsupported view '{item}'. Supported: {', '.join(SUPPORTED_VIEWS)}")
+        if low not in views:
+            views.append(low)
+    return views
+
+
 def _normalize_property_map(raw: Optional[dict]) -> dict:
     out = {}
     if not isinstance(raw, dict):
@@ -188,6 +217,67 @@ def _select_encoder_view(config: dict, override: Optional[str], cfg_step6: dict)
     return step5._select_encoder_view(config, requested)
 
 
+def _available_views(config: dict) -> list[str]:
+    step5 = _load_step5_module()
+    ordered = []
+    for view in config.get("alignment_views", list(SUPPORTED_VIEWS)):
+        if view in SUPPORTED_VIEWS and view not in ordered:
+            ordered.append(view)
+    for view in SUPPORTED_VIEWS:
+        if view not in ordered:
+            ordered.append(view)
+
+    available: list[str] = []
+    for view in ordered:
+        try:
+            if not step5._is_view_enabled(config, view):
+                continue
+            encoder_key = step5.VIEW_SPECS[view]["encoder_key"]
+            if not config.get(encoder_key, {}).get("method_dir"):
+                continue
+            available.append(view)
+        except Exception:
+            continue
+    return available
+
+
+def _select_ood_views(
+    config: dict,
+    override: Optional[str],
+    cfg_step6: dict,
+    cfg_f5: dict,
+    fallback_view: str,
+) -> list[str]:
+    raw = override
+    if raw is None:
+        raw = cfg_step6.get("ood_views", None)
+    if raw is None or str(raw).strip() == "":
+        raw = cfg_f5.get("proposal_views", "all")
+
+    parsed = _parse_view_list(raw)
+    available = _available_views(config)
+    if not available:
+        return [fallback_view]
+
+    if parsed == ["all"] or not parsed:
+        selected = list(available)
+    else:
+        selected = []
+        for view in parsed:
+            if view not in available:
+                raise ValueError(
+                    f"ood view '{view}' is unavailable (disabled or encoder config missing)."
+                )
+            if view not in selected:
+                selected.append(view)
+
+    if fallback_view in available and fallback_view not in selected:
+        selected.append(fallback_view)
+    if not selected:
+        selected = [fallback_view]
+    return selected
+
+
 def _view_to_representation(view: str) -> str:
     mapping = {
         "smiles": "SMILES",
@@ -218,7 +308,7 @@ def _resolve_candidate_scores_path(args, cfg_step6: dict, results_dir: Path) -> 
     return _default_candidate_scores_path(results_dir)
 
 
-def _compute_d2_distance_column(
+def _compute_d2_distance_single_view(
     *,
     config: dict,
     results_dir: Path,
@@ -284,6 +374,53 @@ def _compute_d2_distance_column(
     return d2_full
 
 
+def _compute_d2_distance_column(
+    *,
+    config: dict,
+    results_dir: Path,
+    smiles_list: list[str],
+    ood_views: list[str],
+    ood_k: int,
+    use_alignment: bool,
+    alignment_checkpoint: Optional[str],
+) -> tuple[np.ndarray, dict[str, np.ndarray], list[str]]:
+    n = len(smiles_list)
+    if n == 0:
+        return np.zeros((0,), dtype=np.float32), {}, []
+
+    per_view: dict[str, np.ndarray] = {}
+    used_views: list[str] = []
+    for view in ood_views:
+        try:
+            d2_vec = _compute_d2_distance_single_view(
+                config=config,
+                results_dir=results_dir,
+                smiles_list=smiles_list,
+                encoder_view=view,
+                ood_k=ood_k,
+                use_alignment=use_alignment,
+                alignment_checkpoint=alignment_checkpoint,
+            )
+        except FileNotFoundError as exc:
+            print(f"[F6] Warning: skipping OOD view '{view}' ({exc})")
+            continue
+        per_view[view] = np.asarray(d2_vec, dtype=np.float32).reshape(-1)
+        used_views.append(view)
+
+    if not used_views:
+        raise FileNotFoundError(
+            "No usable OOD views for D2-distance computation. "
+            "Ensure F1 generated D2 embeddings for at least one enabled view."
+        )
+
+    stack = np.column_stack([per_view[v] for v in used_views]).astype(np.float32, copy=False)
+    valid_counts = np.sum(np.isfinite(stack), axis=1)
+    with np.errstate(invalid="ignore"):
+        agg = np.nanmean(stack, axis=1).astype(np.float32, copy=False)
+    agg[valid_counts == 0] = np.nan
+    return agg, per_view, used_views
+
+
 def main(args):
     config = load_config(args.config)
     cfg_step6 = config.get("ood_aware_inverse", {}) or {}
@@ -302,6 +439,13 @@ def main(args):
     encoder_view = _select_encoder_view(config, args.encoder_view, cfg_step6)
     if encoder_view not in SUPPORTED_VIEWS:
         raise ValueError(f"Unsupported encoder_view={encoder_view}. Supported: {', '.join(SUPPORTED_VIEWS)}")
+    ood_views = _select_ood_views(
+        config=config,
+        override=args.ood_views,
+        cfg_step6=cfg_step6,
+        cfg_f5=cfg_f5,
+        fallback_view=encoder_view,
+    )
 
     property_name = args.property
     if property_name is None:
@@ -438,32 +582,48 @@ def main(args):
         df["prediction_uncertainty"] = np.nan
 
     d2_source = "existing"
+    ood_views_used = []
     has_d2 = "d2_distance" in df.columns
     if has_d2:
         df["d2_distance"] = pd.to_numeric(df["d2_distance"], errors="coerce")
+        for view in ood_views:
+            col = f"d2_distance_{view}"
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
     needs_compute = force_recompute
     if not needs_compute and compute_if_missing:
         needs_compute = (not has_d2) or bool(df["d2_distance"].isna().any())
+        if (not needs_compute) and len(ood_views) > 1:
+            present_cols = [f"d2_distance_{v}" for v in ood_views if f"d2_distance_{v}" in df.columns]
+            if len(present_cols) < len(ood_views):
+                needs_compute = True
 
     if needs_compute:
-        d2_source = "recomputed"
+        d2_source = "recomputed_multiview" if len(ood_views) > 1 else "recomputed"
         smiles_list = df["smiles"].astype(str).tolist()
-        d2_values = _compute_d2_distance_column(
+        d2_values, d2_per_view, used_views = _compute_d2_distance_column(
             config=config,
             results_dir=results_dir,
             smiles_list=smiles_list,
-            encoder_view=encoder_view,
+            ood_views=ood_views,
             ood_k=ood_k,
             use_alignment=use_alignment,
             alignment_checkpoint=alignment_checkpoint,
         )
         df["d2_distance"] = d2_values
+        for view_name, values in d2_per_view.items():
+            df[f"d2_distance_{view_name}"] = values
+        ood_views_used = list(used_views)
     elif not has_d2:
         raise ValueError(
             "d2_distance column is missing and compute_d2_distance_if_missing is disabled. "
             "Enable compute or provide d2_distance in candidate_scores.csv."
         )
+    else:
+        ood_views_used = [v for v in ood_views if f"d2_distance_{v}" in df.columns]
+        if not ood_views_used:
+            ood_views_used = [encoder_view]
 
     valid_mask = (
         df["prediction"].notna()
@@ -602,10 +762,11 @@ def main(args):
     model_size = config.get(f"{encoder_view}_encoder", {}).get("model_size", "base")
     top_hits = int(top_df["property_hit"].sum()) if k > 0 else 0
     top_hit_rate = float(top_hits / max(k, 1))
+    representation = "MultiView" if len(set(ood_views_used)) > 1 else _view_to_representation(encoder_view)
 
     metrics_row = {
         "method": "Multi_View_Foundation",
-        "representation": _view_to_representation(encoder_view),
+        "representation": representation,
         "model_size": model_size,
         "property": property_name,
         "target_value": float(target),
@@ -622,6 +783,9 @@ def main(args):
         "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
         "n_constraint_properties": int(len(active_constraint_props)),
         "constraint_properties": ",".join(active_constraint_props),
+        "ood_views_requested": ",".join(ood_views),
+        "ood_views_used": ",".join(ood_views_used),
+        "ood_view_aggregation": "mean",
         "ood_k": int(ood_k),
         "use_alignment_for_ood": bool(use_alignment),
         "d2_distance_source": d2_source,
@@ -697,6 +861,9 @@ def main(args):
             "objective_constraint_weight": float(normalized_term_weights.get("constraint", 0.0)),
             "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
             "constraint_properties": active_constraint_props,
+            "ood_views_requested": ood_views,
+            "ood_views_used": ood_views_used,
+            "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
             "use_alignment_for_ood": bool(use_alignment),
             "candidate_scores_csv": str(candidate_scores_path),
@@ -723,6 +890,9 @@ def main(args):
             "objective_constraint_weight": float(normalized_term_weights.get("constraint", 0.0)),
             "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
             "constraint_properties": active_constraint_props,
+            "ood_views_requested": ood_views,
+            "ood_views_used": ood_views_used,
+            "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
             "use_alignment_for_ood": bool(use_alignment),
             "candidate_scores_csv": str(candidate_scores_path),
@@ -740,6 +910,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="configs/config.yaml")
     parser.add_argument("--candidate_scores_csv", type=str, default=None)
     parser.add_argument("--encoder_view", type=str, default=None, choices=list(SUPPORTED_VIEWS))
+    parser.add_argument("--ood_views", type=str, default=None, help="Comma-separated views or 'all' for multi-view OOD distance.")
     parser.add_argument("--property", type=str, default=None)
     parser.add_argument("--target", type=float, default=None)
     parser.add_argument("--target_mode", type=str, default=None, choices=["window", "ge", "le"])
