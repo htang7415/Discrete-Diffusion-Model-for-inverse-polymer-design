@@ -6,7 +6,7 @@ import inspect
 import json
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -17,14 +17,120 @@ sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.config import load_config, save_config
-from shared.ood_metrics import compute_ood_metrics_from_files
+from shared.ood_metrics import compute_ood_metrics_from_files, knn_distances
 from src.model.multi_view_model import MultiViewModel
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_numpy
+
+try:  # pragma: no cover
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
+
+PUBLICATION_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 8,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.8,
+    "figure.dpi": 300,
+    "savefig.dpi": 600,
+}
+
+if plt is not None:
+    plt.rcParams.update(PUBLICATION_STYLE)
 
 
 def _resolve_path(path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else (BASE_DIR / path)
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _save_figure_png(fig, output_base: Path) -> None:
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+
+
+def _plot_f4_ood_diagnostics(
+    *,
+    d1_to_d2_dist: np.ndarray,
+    gen_to_d2_dist: Optional[np.ndarray],
+    metrics_row: dict,
+    figures_dir: Path,
+) -> None:
+    if plt is None:
+        return
+    d1_vals = np.asarray(d1_to_d2_dist, dtype=np.float32).reshape(-1)
+    d1_vals = d1_vals[np.isfinite(d1_vals)]
+    if d1_vals.size == 0:
+        return
+
+    gen_vals = None
+    if gen_to_d2_dist is not None:
+        g = np.asarray(gen_to_d2_dist, dtype=np.float32).reshape(-1)
+        g = g[np.isfinite(g)]
+        if g.size:
+            gen_vals = g
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.4))
+    ax0, ax1 = axes
+
+    ax0.hist(d1_vals, bins=40, alpha=0.7, color="#4E79A7", label="D1 -> D2")
+    if gen_vals is not None:
+        ax0.hist(gen_vals, bins=40, alpha=0.6, color="#E15759", label="Generated -> D2")
+    ax0.set_xlabel("Distance")
+    ax0.set_ylabel("Count")
+    ax0.grid(alpha=0.25)
+    ax0.legend(loc="best", fontsize=8)
+
+    summary_keys = [
+        ("d1_to_d2_mean_dist", "D1->D2 mean"),
+        ("generated_to_d2_mean_dist", "Gen->D2 mean"),
+        ("frac_generated_near_d2", "Frac gen near D2"),
+    ]
+    labels = []
+    values = []
+    for key, label in summary_keys:
+        val = metrics_row.get(key)
+        if val is None:
+            continue
+        try:
+            val = float(val)
+        except Exception:
+            continue
+        if np.isfinite(val):
+            labels.append(label)
+            values.append(val)
+    if labels:
+        y = np.arange(len(labels), dtype=np.float32)
+        bars = ax1.barh(y, np.asarray(values, dtype=np.float32), color=["#59A14F", "#F28E2B", "#B07AA1"][: len(labels)])
+        ax1.set_yticks(y)
+        ax1.set_yticklabels(labels, fontsize=9)
+        ax1.grid(axis="x", alpha=0.25)
+        for bar, val in zip(bars, values):
+            ax1.text(float(val), bar.get_y() + bar.get_height() / 2.0, f"  {val:.4f}", va="center", ha="left", fontsize=8)
+    else:
+        ax1.text(0.5, 0.5, "No finite summary metrics", ha="center", va="center")
+        ax1.set_axis_off()
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f4_ood_diagnostics")
+    plt.close(fig)
 
 
 def _load_model_size(results_dir: Path, config: dict) -> str:
@@ -150,6 +256,48 @@ def main(args):
     out_path = step_dirs["metrics_dir"] / "metrics_ood.csv"
     import pandas as pd
     save_csv(pd.DataFrame([row]), out_path, legacy_paths=[results_dir / "metrics_ood.csv"], index=False)
+
+    ood_cfg = config.get("ood", {}) or {}
+    generate_figures = args.generate_figures
+    if generate_figures is None:
+        generate_figures = _to_bool(ood_cfg.get("generate_figures", True), True)
+    if generate_figures and plt is None:
+        print("Warning: matplotlib unavailable; skipping F4 figures.")
+        generate_figures = False
+    if generate_figures:
+        d1 = np.load(d1_path)
+        d2 = np.load(d2_path)
+        d1_to_d2_dist = knn_distances(d1, d2, k=k, use_faiss=use_faiss).mean(axis=1)
+        gen_to_d2_dist = None
+        if gen_path is not None and gen_path.exists():
+            try:
+                gen = np.load(gen_path)
+                if gen.size:
+                    gen_to_d2_dist = knn_distances(gen, d2, k=k, use_faiss=use_faiss).mean(axis=1)
+            except Exception:
+                gen_to_d2_dist = None
+
+        save_csv(
+            pd.DataFrame({"d1_to_d2_distance": d1_to_d2_dist}),
+            step_dirs["files_dir"] / "d1_to_d2_distances.csv",
+            legacy_paths=[results_dir / "step4_ood" / "d1_to_d2_distances.csv"],
+            index=False,
+        )
+        if gen_to_d2_dist is not None:
+            save_csv(
+                pd.DataFrame({"generated_to_d2_distance": gen_to_d2_dist}),
+                step_dirs["files_dir"] / "generated_to_d2_distances.csv",
+                legacy_paths=[results_dir / "step4_ood" / "generated_to_d2_distances.csv"],
+                index=False,
+            )
+
+        _plot_f4_ood_diagnostics(
+            d1_to_d2_dist=d1_to_d2_dist,
+            gen_to_d2_dist=gen_to_d2_dist,
+            metrics_row=row,
+            figures_dir=step_dirs["figures_dir"],
+        )
+
     print(f"Saved metrics_ood.csv to {out_path}")
 
 
@@ -165,4 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_alignment", dest="use_alignment", action="store_false")
     parser.set_defaults(use_alignment=True)
     parser.add_argument("--alignment_checkpoint", type=str, default=None)
+    parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
+    parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
+    parser.set_defaults(generate_figures=None)
     main(parser.parse_args())

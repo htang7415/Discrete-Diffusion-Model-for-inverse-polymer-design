@@ -72,7 +72,7 @@ alignment_training:
   max_epochs: 10
   val_ratio: 0.1
   log_every: 50
-  datasets: ["d1"]
+  datasets: ["d1", "d2"]
 
 alignment_e2e:
   batch_size: 64
@@ -81,7 +81,7 @@ alignment_e2e:
   max_epochs: 3
   val_ratio: 0.05
   log_every: 50
-  datasets: ["d1"]
+  datasets: ["d1", "d2"]
   max_samples: null
 
 # F1/F2/F3/F4/F5 pipeline toggles
@@ -92,15 +92,21 @@ pipeline:
   step4_use_alignment: true
   step5_use_alignment: true
 
+# F1 embedding-figure args
+alignment_embeddings:
+  generate_figures: true
+
 # F2 retrieval args
 evaluation:
   recall_ks: [1, 5, 10]
   max_samples_per_dataset: 5000
+  generate_figures: true
 
 # F4 OOD args
 ood:
   nn_k: 50
   use_faiss: true
+  generate_figures: true
 
 # F3 property-head args
 property:
@@ -112,6 +118,7 @@ property:
   model_type: "mlp"
   views: null
   use_alignment: true
+  generate_figures: true
   hyperparameter_tuning:
     n_trials: 150
     enabled: true
@@ -142,7 +149,7 @@ foundation_inverse:
   sampling_num_per_batch: 512       # candidates generated each outer batch
   sampling_batch_size: 128          # model decode batch size inside sampler
   sampling_max_batches: 200         # hard stop to avoid infinite loops
-  proposal_views: "all"             # all|csv/list, proposal generation views used in round-robin
+  proposal_views: "selfies"         # all|csv/list, proposal generation views used in round-robin
   sampling_temperature: null        # null => use method sampling.temperature
   sampling_num_atoms: null          # graph-only optional override
   # Optional comma-separated class filter. Supported classes:
@@ -153,12 +160,15 @@ foundation_inverse:
   require_two_stars: true
   require_novel: true
   require_unique: true
-  max_sa: 4.0
+  max_sa: 4.5
+  per_view_min_hits: 2
+  per_view_quota_relax_after_batches: 12
   committee_properties: ["Td"]  # explicit committee export list for F5/F6/F7 workflow
   property_model_mode: "single"      # single|all; all = aggregate all available F3 models for this property
   property_model_path: ""
   rerank_strategy: "d2_distance"
   rerank_top_k: 100
+  generate_figures: true
   ood_k: 5
   encoder_view: "selfies"  # F5 scoring backbone + fallback proposal view
   use_alignment: true
@@ -184,13 +194,24 @@ ood_aware_inverse:
   uncertainty_weight: 0.15      # penalize committee disagreement (prediction std)
   constraint_weight: 0.05       # soft constraints on non-target properties
   sa_weight: 0.0                # optional SA penalty term
+  descriptor_weight: 0.1        # optional structure-prior penalty (ring/aromatic for Td-like tasks)
   constraint_properties: []     # empty => auto from available pred_<PROP>_mean + targets map
+  descriptor_constraints:
+    aromatic_ring_count:
+      target: 1.0
+      mode: ge
+      weight: 1.0
+    ring_count:
+      target: 1.0
+      mode: ge
+      weight: 1.0
   constraint_weights: {}        # optional per-property multipliers, e.g. {Tm: 2.0}
   normalization: "minmax"       # minmax|rank|none
   ood_k: 5
   compute_d2_distance_if_missing: true
   use_alignment: true
   alignment_checkpoint: ""
+  generate_figures: true
 
 # F7 chemistry/physics analysis args
 chem_physics_analysis:

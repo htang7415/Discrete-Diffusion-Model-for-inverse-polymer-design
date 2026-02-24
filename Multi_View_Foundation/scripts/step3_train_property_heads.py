@@ -8,7 +8,7 @@ import sys
 import importlib.util
 import json
 import copy
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,14 @@ try:
 except Exception:  # pragma: no cover
     root_mean_squared_error = None
 
+try:  # pragma: no cover
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BASE_DIR.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -31,6 +39,50 @@ from src.utils.config import load_config, save_config
 from src.data.view_converters import smiles_to_selfies
 from src.model.multi_view_model import MultiViewModel
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json
+
+
+REPRESENTATION_ORDER = [
+    "SMILES",
+    "SMILES_BPE",
+    "SELFIES",
+    "Group_SELFIES",
+    "Graph",
+    "MultiViewMean",
+]
+
+SPLIT_ORDER = ["train", "val", "test"]
+SPLIT_COLORS = {
+    "train": "#4E79A7",
+    "val": "#F28E2B",
+    "test": "#E15759",
+}
+
+REPRESENTATION_COLORS = {
+    "SMILES": "#4E79A7",
+    "SMILES_BPE": "#76B7B2",
+    "SELFIES": "#F28E2B",
+    "Group_SELFIES": "#59A14F",
+    "Graph": "#9C755F",
+    "MultiViewMean": "#E15759",
+}
+
+
+PUBLICATION_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 8,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.8,
+    "figure.dpi": 300,
+    "savefig.dpi": 600,
+}
+
+if plt is not None:
+    plt.rcParams.update(PUBLICATION_STYLE)
 
 
 def _resolve_path(path_str: str) -> Path:
@@ -354,6 +406,580 @@ def _to_int_or_none(value):
     if not text:
         return None
     return int(float(text))
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ordered_representations(values: List[str]) -> List[str]:
+    seen = set()
+    ordered = []
+    for rep in REPRESENTATION_ORDER:
+        if rep in values and rep not in seen:
+            ordered.append(rep)
+            seen.add(rep)
+    for rep in values:
+        if rep not in seen:
+            ordered.append(rep)
+            seen.add(rep)
+    return ordered
+
+
+def _representation_color(rep: str) -> str:
+    return REPRESENTATION_COLORS.get(str(rep), "#B07AA1")
+
+
+def _view_to_representation(view: str) -> str:
+    token = str(view or "").strip().lower()
+    mapping = {
+        "smiles": "SMILES",
+        "smiles_bpe": "SMILES_BPE",
+        "selfies": "SELFIES",
+        "group_selfies": "Group_SELFIES",
+        "graph": "Graph",
+        "multiview_mean": "MultiViewMean",
+        "multiviewmean": "MultiViewMean",
+    }
+    return mapping.get(token, token.upper() if token else "UNKNOWN")
+
+
+def _to_float_or_nan(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float("nan")
+
+
+def _save_figure_png(fig, output_base: Path) -> None:
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+
+
+def _draw_heatmap(
+    *,
+    fig,
+    ax,
+    matrix: np.ndarray,
+    row_labels: List[str],
+    col_labels: List[str],
+    cmap: str = "viridis",
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    value_fmt: str = ".2f",
+) -> None:
+    arr = np.asarray(matrix, dtype=np.float32)
+    masked = np.ma.masked_invalid(arr)
+    im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    ax.set_yticks(np.arange(len(row_labels)))
+    ax.set_yticklabels(row_labels, fontsize=9)
+    ax.set_xticks(np.arange(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=30, ha="right", fontsize=9)
+    for r in range(arr.shape[0]):
+        for c in range(arr.shape[1]):
+            val = arr[r, c]
+            if np.isfinite(val):
+                ax.text(c, r, format(float(val), value_fmt), ha="center", va="center", fontsize=8, color="black")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+
+def _plot_f3_metrics_by_split(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
+    if plt is None or metrics_df.empty:
+        return
+    properties = sorted(metrics_df["property"].astype(str).unique().tolist())
+    metric_specs = [
+        ("r2", "R2"),
+        ("rmse", "RMSE"),
+        ("mae", "MAE"),
+    ]
+
+    n_rows = len(properties)
+    n_cols = len(metric_specs)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6.0 * n_cols, 3.8 * n_rows), squeeze=False)
+
+    for row_idx, prop in enumerate(properties):
+        sub_prop = metrics_df[metrics_df["property"] == prop].copy()
+        reps = _ordered_representations(sub_prop["representation"].astype(str).unique().tolist())
+        for col_idx, (metric_col, metric_label) in enumerate(metric_specs):
+            ax = axes[row_idx, col_idx]
+            if not reps or metric_col not in sub_prop.columns:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_axis_off()
+                continue
+
+            pivot = sub_prop.pivot_table(
+                index="representation",
+                columns="split",
+                values=metric_col,
+                aggfunc="mean",
+            ).reindex(index=reps)
+
+            x = np.arange(len(reps), dtype=np.float32)
+            width = 0.24
+            for split_idx, split_name in enumerate(SPLIT_ORDER):
+                if split_name not in pivot.columns:
+                    continue
+                y = pd.to_numeric(pivot[split_name], errors="coerce").to_numpy(dtype=np.float32)
+                offset = (split_idx - 1) * width
+                ax.bar(
+                    x + offset,
+                    y,
+                    width=width,
+                    color=SPLIT_COLORS.get(split_name, "#999999"),
+                    label=split_name,
+                    alpha=0.9,
+                )
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(reps, rotation=30, ha="right", fontsize=8)
+            ax.set_ylabel(metric_label)
+            ax.grid(axis="y", alpha=0.25)
+            if metric_col == "r2":
+                flat = pivot.to_numpy(dtype=np.float32).reshape(-1)
+                finite = flat[np.isfinite(flat)]
+                low = float(np.min(finite) - 0.05) if finite.size else -0.1
+                ax.set_ylim(min(-0.1, low), 1.0)
+
+            if row_idx == 0 and col_idx == 0:
+                ax.legend(loc="best", fontsize=8)
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_metrics_by_split")
+    plt.close(fig)
+
+
+def _plot_f3_generalization_heatmaps(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
+    if plt is None or metrics_df.empty:
+        return
+    properties = sorted(metrics_df["property"].astype(str).unique().tolist())
+    reps = _ordered_representations(metrics_df["representation"].astype(str).unique().tolist())
+    if not properties or not reps:
+        return
+
+    r2_test = np.full((len(properties), len(reps)), np.nan, dtype=np.float32)
+    r2_gap = np.full((len(properties), len(reps)), np.nan, dtype=np.float32)
+    rmse_ratio = np.full((len(properties), len(reps)), np.nan, dtype=np.float32)
+
+    for p_idx, prop in enumerate(properties):
+        sub_prop = metrics_df[metrics_df["property"] == prop]
+        for r_idx, rep in enumerate(reps):
+            sub_rep = sub_prop[sub_prop["representation"] == rep]
+            if sub_rep.empty:
+                continue
+            train_r2 = pd.to_numeric(sub_rep[sub_rep["split"] == "train"]["r2"], errors="coerce").mean()
+            test_r2 = pd.to_numeric(sub_rep[sub_rep["split"] == "test"]["r2"], errors="coerce").mean()
+            train_rmse = pd.to_numeric(sub_rep[sub_rep["split"] == "train"]["rmse"], errors="coerce").mean()
+            test_rmse = pd.to_numeric(sub_rep[sub_rep["split"] == "test"]["rmse"], errors="coerce").mean()
+            if np.isfinite(test_r2):
+                r2_test[p_idx, r_idx] = float(test_r2)
+            if np.isfinite(train_r2) and np.isfinite(test_r2):
+                r2_gap[p_idx, r_idx] = float(train_r2 - test_r2)
+            if np.isfinite(train_rmse) and np.isfinite(test_rmse) and abs(float(train_rmse)) > 1e-12:
+                rmse_ratio[p_idx, r_idx] = float(test_rmse / train_rmse)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, max(4.2, 0.62 * len(properties) + 2.8)))
+    _draw_heatmap(
+        fig=fig,
+        ax=axes[0],
+        matrix=r2_test,
+        row_labels=properties,
+        col_labels=reps,
+        cmap="YlGn",
+        vmin=0.0,
+        vmax=1.0,
+    )
+    _draw_heatmap(
+        fig=fig,
+        ax=axes[1],
+        matrix=r2_gap,
+        row_labels=properties,
+        col_labels=reps,
+        cmap="coolwarm",
+    )
+    _draw_heatmap(
+        fig=fig,
+        ax=axes[2],
+        matrix=rmse_ratio,
+        row_labels=properties,
+        col_labels=reps,
+        cmap="magma",
+        vmin=0.5,
+        vmax=2.0,
+    )
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_generalization_heatmaps")
+    plt.close(fig)
+
+
+def _plot_f3_test_head_leaderboard(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
+    if plt is None or metrics_df.empty:
+        return
+    test_df = metrics_df[metrics_df["split"] == "test"].copy()
+    if test_df.empty:
+        return
+
+    metric_specs = [
+        ("r2", "R2", True),
+        ("rmse", "RMSE", False),
+        ("mae", "MAE", False),
+    ]
+    properties = sorted(test_df["property"].astype(str).unique().tolist())
+    fig, axes = plt.subplots(
+        len(properties),
+        len(metric_specs),
+        figsize=(5.6 * len(metric_specs), max(3.8, 3.2 * len(properties))),
+        squeeze=False,
+    )
+
+    ranking_rows = []
+    for row_idx, prop in enumerate(properties):
+        sub_prop = test_df[test_df["property"] == prop].copy()
+        for col_idx, (metric_col, metric_label, higher_is_better) in enumerate(metric_specs):
+            ax = axes[row_idx, col_idx]
+            metric_values = pd.to_numeric(sub_prop[metric_col], errors="coerce")
+            valid = sub_prop.assign(_metric=metric_values).dropna(subset=["_metric"]).copy()
+            if valid.empty:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_axis_off()
+                continue
+            valid = valid.sort_values("_metric", ascending=not higher_is_better).reset_index(drop=True)
+            reps = valid["representation"].astype(str).tolist()
+            vals = valid["_metric"].to_numpy(dtype=np.float32)
+
+            y = np.arange(len(reps), dtype=np.float32)
+            colors = [_representation_color(rep) for rep in reps]
+            bars = ax.barh(y, vals, color=colors, alpha=0.92)
+            ax.set_yticks(y)
+            ax.set_yticklabels(reps, fontsize=8)
+            ax.invert_yaxis()
+            ax.set_xlabel(metric_label)
+            ax.grid(axis="x", alpha=0.25)
+            if metric_col == "r2":
+                finite = vals[np.isfinite(vals)]
+                if finite.size:
+                    low = min(-0.1, float(np.min(finite) - 0.05))
+                    high = max(1.0, float(np.max(finite) + 0.05))
+                    ax.set_xlim(low, high)
+            for rank_idx, (bar, rep, val) in enumerate(zip(bars, reps, vals), start=1):
+                if not np.isfinite(val):
+                    continue
+                ax.text(
+                    float(val),
+                    bar.get_y() + bar.get_height() / 2.0,
+                    f"  {val:.3f}",
+                    va="center",
+                    ha="left",
+                    fontsize=7,
+                )
+                ranking_rows.append(
+                    {
+                        "property": prop,
+                        "metric": metric_col,
+                        "rank": rank_idx,
+                        "representation": rep,
+                        "value": float(val),
+                        "split": "test",
+                    }
+                )
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_test_head_leaderboard")
+    plt.close(fig)
+
+    if ranking_rows:
+        save_csv(
+            pd.DataFrame(ranking_rows),
+            figures_dir / "figure_f3_test_head_leaderboard.csv",
+            index=False,
+        )
+
+
+def _build_f3_fusion_gain_table(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    if metrics_df.empty:
+        return pd.DataFrame()
+    test_df = metrics_df[metrics_df["split"] == "test"].copy()
+    if test_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for prop in sorted(test_df["property"].astype(str).unique().tolist()):
+        sub_prop = test_df[test_df["property"] == prop].copy()
+        fusion = sub_prop[sub_prop["representation"] == "MultiViewMean"].copy()
+        single = sub_prop[sub_prop["representation"] != "MultiViewMean"].copy()
+        if fusion.empty or single.empty:
+            continue
+        fusion_row = fusion.iloc[0]
+
+        single_r2 = single.assign(_metric=pd.to_numeric(single["r2"], errors="coerce")).dropna(subset=["_metric"])
+        single_rmse = single.assign(_metric=pd.to_numeric(single["rmse"], errors="coerce")).dropna(subset=["_metric"])
+        single_mae = single.assign(_metric=pd.to_numeric(single["mae"], errors="coerce")).dropna(subset=["_metric"])
+        if single_r2.empty or single_rmse.empty or single_mae.empty:
+            continue
+
+        best_r2 = single_r2.loc[single_r2["_metric"].idxmax()]
+        best_rmse = single_rmse.loc[single_rmse["_metric"].idxmin()]
+        best_mae = single_mae.loc[single_mae["_metric"].idxmin()]
+
+        fusion_r2 = _to_float_or_nan(fusion_row.get("r2"))
+        fusion_rmse = _to_float_or_nan(fusion_row.get("rmse"))
+        fusion_mae = _to_float_or_nan(fusion_row.get("mae"))
+        best_single_r2 = _to_float_or_nan(best_r2["_metric"])
+        best_single_rmse = _to_float_or_nan(best_rmse["_metric"])
+        best_single_mae = _to_float_or_nan(best_mae["_metric"])
+
+        rows.append(
+            {
+                "property": prop,
+                "fusion_r2": fusion_r2,
+                "best_single_r2": best_single_r2,
+                "best_single_r2_representation": str(best_r2["representation"]),
+                "delta_r2_fusion_minus_best_single": fusion_r2 - best_single_r2,
+                "fusion_rmse": fusion_rmse,
+                "best_single_rmse": best_single_rmse,
+                "best_single_rmse_representation": str(best_rmse["representation"]),
+                "delta_rmse_reduction_best_single_minus_fusion": best_single_rmse - fusion_rmse,
+                "fusion_mae": fusion_mae,
+                "best_single_mae": best_single_mae,
+                "best_single_mae_representation": str(best_mae["representation"]),
+                "delta_mae_reduction_best_single_minus_fusion": best_single_mae - fusion_mae,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _plot_f3_fusion_gain(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
+    if plt is None or metrics_df.empty:
+        return
+    gain_df = _build_f3_fusion_gain_table(metrics_df)
+    if gain_df.empty:
+        return
+
+    metric_specs = [
+        ("delta_r2_fusion_minus_best_single", "R2 Gain (fusion - best single)"),
+        ("delta_rmse_reduction_best_single_minus_fusion", "RMSE Reduction (best single - fusion)"),
+        ("delta_mae_reduction_best_single_minus_fusion", "MAE Reduction (best single - fusion)"),
+    ]
+    props = gain_df["property"].astype(str).tolist()
+    x = np.arange(len(props), dtype=np.float32)
+
+    fig, axes = plt.subplots(1, len(metric_specs), figsize=(5.8 * len(metric_specs), max(3.8, 0.8 * len(props) + 2.6)))
+    if len(metric_specs) == 1:
+        axes = [axes]
+
+    for ax, (col, label_text) in zip(axes, metric_specs):
+        values = pd.to_numeric(gain_df[col], errors="coerce").to_numpy(dtype=np.float32)
+        colors = ["#59A14F" if np.isfinite(v) and v >= 0 else "#E15759" for v in values]
+        bars = ax.bar(x, values, color=colors, alpha=0.9)
+        ax.axhline(0.0, color="#444444", linewidth=1.0)
+        ax.set_xticks(x)
+        ax.set_xticklabels(props, rotation=30, ha="right", fontsize=8)
+        ax.set_ylabel(label_text)
+        ax.grid(axis="y", alpha=0.25)
+        finite = values[np.isfinite(values)]
+        offset = max(0.01, 0.03 * float(np.max(np.abs(finite)))) if finite.size else 0.01
+        for bar, val in zip(bars, values):
+            if not np.isfinite(val):
+                continue
+            text_y = float(val) + (offset if val >= 0 else -offset)
+            va = "bottom" if val >= 0 else "top"
+            ax.text(bar.get_x() + bar.get_width() / 2.0, text_y, f"{val:+.3f}", ha="center", va=va, fontsize=8)
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_fusion_gain_vs_best_single")
+    plt.close(fig)
+
+    save_csv(gain_df, figures_dir / "figure_f3_fusion_gain_vs_best_single.csv", index=False)
+
+
+def _load_f3_meta_table(model_dir: Path) -> pd.DataFrame:
+    rows = []
+    for path in sorted(model_dir.glob("*_meta.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        prop = str(payload.get("property", "")).strip()
+        view = str(payload.get("view", "")).strip()
+        if not prop or not view:
+            continue
+        rep = _view_to_representation(view)
+        num_samples = _to_float_or_nan(payload.get("num_samples"))
+        num_common = _to_float_or_nan(payload.get("num_common"))
+        effective_samples = num_common if np.isfinite(num_common) else num_samples
+        rows.append(
+            {
+                "property": prop,
+                "view": view,
+                "representation": rep,
+                "num_samples": num_samples,
+                "num_common": num_common,
+                "effective_samples": effective_samples,
+            }
+        )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _plot_f3_head_coverage(model_dir: Path, figures_dir: Path) -> None:
+    if plt is None:
+        return
+    meta_df = _load_f3_meta_table(model_dir)
+    if meta_df.empty:
+        return
+    properties = sorted(meta_df["property"].astype(str).unique().tolist())
+    fig, axes = plt.subplots(len(properties), 1, figsize=(11, max(3.6, 3.1 * len(properties))), squeeze=False)
+
+    for row_idx, prop in enumerate(properties):
+        ax = axes[row_idx, 0]
+        sub_prop = meta_df[meta_df["property"] == prop].copy()
+        reps = _ordered_representations(sub_prop["representation"].astype(str).unique().tolist())
+        if not reps:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            ax.set_axis_off()
+            continue
+        sub_prop = sub_prop.set_index("representation").reindex(reps)
+        total = pd.to_numeric(sub_prop["num_samples"], errors="coerce").to_numpy(dtype=np.float32)
+        effective = pd.to_numeric(sub_prop["effective_samples"], errors="coerce").to_numpy(dtype=np.float32)
+        x = np.arange(len(reps), dtype=np.float32)
+
+        total_for_plot = np.where(np.isfinite(total), total, effective)
+        ax.bar(x, total_for_plot, width=0.68, color="#CFCFCF", alpha=0.45, label="num_samples")
+        colors = [_representation_color(rep) for rep in reps]
+        bars = ax.bar(x, effective, width=0.52, color=colors, alpha=0.92, label="effective_samples")
+        ax.set_xticks(x)
+        ax.set_xticklabels(reps, rotation=30, ha="right", fontsize=8)
+        ax.set_ylabel("Samples")
+        ax.grid(axis="y", alpha=0.25)
+
+        for bar, val in zip(bars, effective):
+            if not np.isfinite(val):
+                continue
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                float(val),
+                f"{int(round(float(val)))}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
+
+        if row_idx == 0:
+            ax.legend(loc="best", fontsize=8)
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_head_coverage")
+    plt.close(fig)
+    save_csv(meta_df, figures_dir / "figure_f3_head_coverage.csv", index=False)
+
+
+def _parse_trial_file_info(path: Path) -> Tuple[str, str]:
+    stem = path.stem
+    suffix = "_mlp_hpo_trials"
+    base = stem[: -len(suffix)] if stem.endswith(suffix) else stem
+
+    token_to_rep = [
+        ("multiview_mean", "MultiViewMean"),
+        ("group_selfies", "Group_SELFIES"),
+        ("smiles_bpe", "SMILES_BPE"),
+        ("selfies", "SELFIES"),
+        ("graph", "Graph"),
+        ("smiles", "SMILES"),
+    ]
+    for token, rep in token_to_rep:
+        tail = f"_{token}"
+        if base.endswith(tail):
+            prop = base[: -len(tail)]
+            return prop, rep
+    return base, "SMILES"
+
+
+def _plot_f3_hpo_progress(model_dir: Path, figures_dir: Path) -> None:
+    if plt is None:
+        return
+    trial_files = sorted(model_dir.glob("*_mlp_hpo_trials.csv"))
+    if not trial_files:
+        return
+
+    by_property: Dict[str, List[Tuple[str, np.ndarray, np.ndarray, str]]] = {}
+    for path in trial_files:
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            continue
+        required = {"trial", "objective_metric", "objective_value"}
+        if not required.issubset(set(df.columns)):
+            continue
+        df = df.copy()
+        df["trial"] = pd.to_numeric(df["trial"], errors="coerce")
+        df["objective_value"] = pd.to_numeric(df["objective_value"], errors="coerce")
+        df = df.dropna(subset=["trial", "objective_value"])
+        if df.empty:
+            continue
+        df = df.sort_values("trial")
+        metric_name = str(df["objective_metric"].iloc[0]).strip().lower()
+        y = df["objective_value"].to_numpy(dtype=np.float32)
+        if metric_name == "r2":
+            best_curve = np.maximum.accumulate(y)
+        else:
+            best_curve = np.minimum.accumulate(y)
+        x = df["trial"].to_numpy(dtype=np.float32)
+        prop, rep = _parse_trial_file_info(path)
+        by_property.setdefault(prop, []).append((rep, x, best_curve, metric_name))
+
+    if not by_property:
+        return
+
+    properties = sorted(by_property.keys())
+    fig, axes = plt.subplots(len(properties), 1, figsize=(11, max(3.6, 3.2 * len(properties))), squeeze=False)
+    for row_idx, prop in enumerate(properties):
+        ax = axes[row_idx, 0]
+        lines = by_property[prop]
+        rep_order = _ordered_representations([item[0] for item in lines])
+        line_map = {item[0]: item for item in lines}
+        metrics = set()
+        for rep in rep_order:
+            rep_name, x, best_curve, metric_name = line_map[rep]
+            metrics.add(metric_name)
+            ax.plot(x, best_curve, label=rep_name, linewidth=1.8)
+        metric_text = ",".join(sorted(metrics)) if metrics else "objective"
+        ax.set_xlabel("Trial")
+        ax.set_ylabel(f"Best {metric_text}")
+        ax.grid(alpha=0.3)
+        ax.legend(loc="best", fontsize=8, ncol=2)
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f3_hpo_progress")
+    plt.close(fig)
+
+
+def _generate_f3_figures(
+    *,
+    metrics_df: pd.DataFrame,
+    model_dir: Path,
+    figures_dir: Path,
+    prop_cfg: dict,
+    args,
+) -> None:
+    generate = args.generate_figures
+    if generate is None:
+        generate = _to_bool(prop_cfg.get("generate_figures", True), True)
+    if not generate:
+        return
+    if plt is None:
+        print("Warning: matplotlib unavailable; skipping F3 figures.")
+        return
+
+    _plot_f3_metrics_by_split(metrics_df, figures_dir)
+    _plot_f3_generalization_heatmaps(metrics_df, figures_dir)
+    _plot_f3_test_head_leaderboard(metrics_df, figures_dir)
+    _plot_f3_fusion_gain(metrics_df, figures_dir)
+    _plot_f3_head_coverage(model_dir, figures_dir)
+    _plot_f3_hpo_progress(model_dir, figures_dir)
 
 
 def _resolve_property_columns(df: pd.DataFrame, property_name: str) -> tuple[str, str]:
@@ -758,8 +1384,33 @@ def main(args):
     save_config(config, results_dir / "config_used.yaml")
     save_config(config, step_dirs["files_dir"] / "config_used.yaml")
 
-    property_dir = _resolve_path(config["paths"]["property_dir"])
     prop_cfg = config.get("property", {})
+    if args.figures_only:
+        metrics_candidates = [
+            step_dirs["metrics_dir"] / "metrics_property.csv",
+            step_dirs["step_dir"] / "metrics_property.csv",
+            results_dir / "metrics_property.csv",
+        ]
+        metrics_path = next((p for p in metrics_candidates if p.exists()), None)
+        if metrics_path is None:
+            raise FileNotFoundError(
+                "No metrics_property.csv found. Run F3 training first or provide the expected metrics file."
+            )
+        metrics_df = pd.read_csv(metrics_path)
+        model_dir = step_dirs["files_dir"]
+        if not any(model_dir.glob("*_meta.json")) and any(step_dirs["step_dir"].glob("*_meta.json")):
+            model_dir = step_dirs["step_dir"]
+        _generate_f3_figures(
+            metrics_df=metrics_df,
+            model_dir=model_dir,
+            figures_dir=step_dirs["figures_dir"],
+            prop_cfg=prop_cfg,
+            args=args,
+        )
+        print(f"Saved F3 figures to {step_dirs['figures_dir']}")
+        return
+
+    property_dir = _resolve_path(config["paths"]["property_dir"])
     model_type = str(prop_cfg.get("model_type", "mlp")).strip().lower()
     if model_type != "mlp":
         raise ValueError("Only property.model_type='mlp' is supported.")
@@ -1184,6 +1835,13 @@ def main(args):
         legacy_paths=[results_dir / "metrics_property.csv"],
         index=False,
     )
+    _generate_f3_figures(
+        metrics_df=metrics_df,
+        model_dir=model_dir,
+        figures_dir=step_dirs["figures_dir"],
+        prop_cfg=prop_cfg,
+        args=args,
+    )
     print(f"Saved metrics_property.csv to {results_dir}")
 
 
@@ -1196,6 +1854,10 @@ if __name__ == "__main__":
     parser.add_argument("--tune", dest="tune", action="store_true")
     parser.add_argument("--no_tune", dest="tune", action="store_false")
     parser.set_defaults(tune=None)
+    parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
+    parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
+    parser.set_defaults(generate_figures=None)
+    parser.add_argument("--figures_only", action="store_true", help="Regenerate F3 figures from existing metrics/models without retraining.")
     parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--views", type=str, default=None, help="comma-separated list of views")
     main(parser.parse_args())

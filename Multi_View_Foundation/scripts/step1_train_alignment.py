@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import time
 import importlib.util
+from typing import Any, List
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,32 @@ from src.model.multi_view_e2e import MultiViewE2EModel
 from src.training.contrastive_trainer import ContrastiveTrainer, TrainerConfig, EndToEndContrastiveTrainer
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json, save_numpy
 
+try:  # pragma: no cover
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
+
+PUBLICATION_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 8,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.8,
+    "figure.dpi": 300,
+    "savefig.dpi": 600,
+}
+
+if plt is not None:
+    plt.rcParams.update(PUBLICATION_STYLE)
+
 
 def _resolve_path(path_str: str) -> Path:
     path = Path(path_str)
@@ -37,6 +64,176 @@ def _resolve_path(path_str: str) -> Path:
 def _resolve_with_base(path_str: str, base_dir: Path) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else (base_dir / path)
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _save_figure_png(fig, output_base: Path) -> None:
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+
+
+def _load_f1_meta_table(results_dir: Path, step_dirs: dict) -> pd.DataFrame:
+    rows = []
+    files_dir = step_dirs["files_dir"]
+    for path in sorted(files_dir.glob("embedding_meta_*.json")):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        view = str(payload.get("view", "")).strip()
+        if not view:
+            continue
+        rows.append(
+            {
+                "view": view,
+                "model_size": str(payload.get("model_size", "")),
+                "d1_samples": float(payload.get("d1_samples", 0) or 0),
+                "d2_samples": float(payload.get("d2_samples", 0) or 0),
+                "embedding_dim": float(payload.get("embedding_dim", 0) or 0),
+                "d1_time_sec": float(payload.get("d1_time_sec", 0) or 0),
+                "d2_time_sec": float(payload.get("d2_time_sec", 0) or 0),
+            }
+        )
+    if not rows:
+        for path in sorted(results_dir.glob("embedding_meta_*.json")):
+            try:
+                payload = json.loads(path.read_text())
+            except Exception:
+                continue
+            view = str(payload.get("view", "")).strip()
+            if not view:
+                continue
+            rows.append(
+                {
+                    "view": view,
+                    "model_size": str(payload.get("model_size", "")),
+                    "d1_samples": float(payload.get("d1_samples", 0) or 0),
+                    "d2_samples": float(payload.get("d2_samples", 0) or 0),
+                    "embedding_dim": float(payload.get("embedding_dim", 0) or 0),
+                    "d1_time_sec": float(payload.get("d1_time_sec", 0) or 0),
+                    "d2_time_sec": float(payload.get("d2_time_sec", 0) or 0),
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["total_time_sec"] = pd.to_numeric(df["d1_time_sec"], errors="coerce").fillna(0.0) + pd.to_numeric(df["d2_time_sec"], errors="coerce").fillna(0.0)
+    return df.sort_values("view").reset_index(drop=True)
+
+
+def _plot_f1_embedding_summary(meta_df: pd.DataFrame, figures_dir: Path) -> None:
+    if plt is None or meta_df.empty:
+        return
+    views = meta_df["view"].astype(str).tolist()
+    x = np.arange(len(views), dtype=np.float32)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    ax0, ax1, ax2, ax3 = axes.reshape(-1)
+
+    d1 = pd.to_numeric(meta_df["d1_samples"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+    d2 = pd.to_numeric(meta_df["d2_samples"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+    width = 0.36
+    ax0.bar(x - width / 2.0, d1, width=width, color="#4E79A7", alpha=0.9, label="D1")
+    ax0.bar(x + width / 2.0, d2, width=width, color="#F28E2B", alpha=0.9, label="D2")
+    ax0.set_xticks(x)
+    ax0.set_xticklabels(views, rotation=30, ha="right", fontsize=8)
+    ax0.set_ylabel("Samples")
+    ax0.grid(axis="y", alpha=0.25)
+    ax0.legend(loc="best", fontsize=8)
+
+    total_time = pd.to_numeric(meta_df["total_time_sec"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+    bars = ax1.bar(views, total_time, color="#59A14F", alpha=0.9)
+    ax1.set_ylabel("Seconds (D1 + D2)")
+    ax1.grid(axis="y", alpha=0.25)
+    ax1.tick_params(axis="x", rotation=30)
+    for bar, val in zip(bars, total_time):
+        ax1.text(bar.get_x() + bar.get_width() / 2.0, float(val), f"{float(val):.1f}", ha="center", va="bottom", fontsize=8)
+
+    emb_dim = pd.to_numeric(meta_df["embedding_dim"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+    ax2.bar(views, emb_dim, color="#B07AA1", alpha=0.9)
+    ax2.set_ylabel("Dimension")
+    ax2.grid(axis="y", alpha=0.25)
+    ax2.tick_params(axis="x", rotation=30)
+
+    ax3.axis("off")
+    model_sizes = [f"{v}: {m}" for v, m in zip(meta_df["view"].astype(str), meta_df["model_size"].astype(str))]
+    summary_lines = [
+        f"Views: {len(views)}",
+        f"Total D1 samples: {int(np.sum(d1))}",
+        f"Total D2 samples: {int(np.sum(d2))}",
+        f"Total embedding time: {float(np.sum(total_time)):.1f}s",
+        "Model sizes:",
+        *model_sizes,
+    ]
+    ax3.text(0.02, 0.98, "\n".join(summary_lines), va="top", ha="left", fontsize=9, family="monospace")
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f1_embedding_summary")
+    plt.close(fig)
+
+
+def _plot_alignment_loss_curve(curve_path: Path, output_base: Path) -> bool:
+    if plt is None or not curve_path.exists():
+        return False
+    try:
+        df = pd.read_csv(curve_path)
+    except Exception:
+        return False
+    if df.empty or "epoch" not in df.columns:
+        return False
+    train_loss = pd.to_numeric(df.get("train_loss", pd.Series(dtype=float)), errors="coerce")
+    val_loss = pd.to_numeric(df.get("val_loss", pd.Series(dtype=float)), errors="coerce")
+    epochs = pd.to_numeric(df["epoch"], errors="coerce")
+    mask = epochs.notna()
+    if not mask.any():
+        return False
+    x = epochs[mask].to_numpy(dtype=np.float32)
+
+    fig, ax = plt.subplots(figsize=(7.6, 4.6))
+    if train_loss.notna().any():
+        ax.plot(x, train_loss[mask].to_numpy(dtype=np.float32), label="train_loss", color="#4E79A7", linewidth=1.8)
+    if val_loss.notna().any():
+        ax.plot(x, val_loss[mask].to_numpy(dtype=np.float32), label="val_loss", color="#E15759", linewidth=1.8)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    _save_figure_png(fig, output_base)
+    plt.close(fig)
+    return True
+
+
+def _generate_f1_figures(*, results_dir: Path, step_dirs: dict, cfg_f1: dict, args) -> None:
+    generate = args.generate_figures
+    if generate is None:
+        generate = _to_bool(cfg_f1.get("generate_figures", True), True)
+    if not generate:
+        return
+    if plt is None:
+        print("Warning: matplotlib unavailable; skipping F1 figures.")
+        return
+
+    meta_df = _load_f1_meta_table(results_dir, step_dirs)
+    if not meta_df.empty:
+        _plot_f1_embedding_summary(meta_df, step_dirs["figures_dir"])
+        save_csv(meta_df, step_dirs["figures_dir"] / "figure_f1_embedding_summary.csv", index=False)
+
+    _plot_alignment_loss_curve(
+        results_dir / "step1_alignment" / "alignment_loss_curve.csv",
+        step_dirs["figures_dir"] / "figure_f1_alignment_loss_frozen",
+    )
+    _plot_alignment_loss_curve(
+        results_dir / "step1_alignment_e2e" / "alignment_loss_curve.csv",
+        step_dirs["figures_dir"] / "figure_f1_alignment_loss_e2e",
+    )
 
 
 def _load_module(module_name: str, path: Path):
@@ -563,6 +760,12 @@ def main(args):
     step_dirs = ensure_step_dirs(results_dir, "step1_alignment_embeddings")
     save_config(config, results_dir / "config_used.yaml")
     save_config(config, step_dirs["files_dir"] / "config_used.yaml")
+    cfg_f1 = config.get("alignment_embeddings", {}) or {}
+
+    if args.figures_only:
+        _generate_f1_figures(results_dir=results_dir, step_dirs=step_dirs, cfg_f1=cfg_f1, args=args)
+        print(f"Saved F1 figures to {step_dirs['figures_dir']}")
+        return
 
     paired_index_path = _resolve_path(config["paths"].get("paired_index", str(results_dir / "paired_index.csv")))
     if not paired_index_path.exists():
@@ -780,6 +983,8 @@ def main(args):
         print("\nTraining end-to-end alignment (fine-tuning backbones)...")
         _train_e2e_alignment(results_dir, paired_index_path, active_views, config, view_specs, device)
 
+    _generate_f1_figures(results_dir=results_dir, step_dirs=step_dirs, cfg_f1=cfg_f1, args=args)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -790,4 +995,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Fine-tune view backbones end-to-end with contrastive alignment.",
     )
+    parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
+    parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
+    parser.set_defaults(generate_figures=None)
+    parser.add_argument("--figures_only", action="store_true", help="Regenerate F1 figures from existing outputs without recomputing embeddings.")
     main(parser.parse_args())

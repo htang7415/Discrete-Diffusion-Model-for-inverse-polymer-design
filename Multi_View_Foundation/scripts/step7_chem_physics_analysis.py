@@ -113,6 +113,28 @@ PHYSICS_RULES = {
     ],
 }
 
+PUBLICATION_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.linewidth": 0.8,
+    "axes.titleweight": "bold",
+    "axes.labelsize": 10,
+    "axes.titlesize": 11,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.frameon": False,
+    "legend.fontsize": 9,
+    "figure.dpi": 300,
+    "savefig.dpi": 600,
+}
+
+COLOR_PRIMARY = "#2A5CAA"
+COLOR_SECONDARY = "#E76F51"
+COLOR_ACCENT = "#2A9D8F"
+COLOR_MUTED = "#9AA3AF"
+
 
 def _resolve_path(path_str: str) -> Path:
     path = Path(path_str)
@@ -151,6 +173,16 @@ def _to_float_or_none(value):
     if not text:
         return None
     return float(text)
+
+
+def _save_figure_png(fig, output_base: Path) -> None:
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+
+
+def _numeric_array(values) -> np.ndarray:
+    arr = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=np.float32)
+    return arr[np.isfinite(arr)]
 
 
 def _normalize_property_name(value) -> str:
@@ -674,6 +706,331 @@ def _resolve_target_config(
     return target, target_mode, epsilon
 
 
+def _prepare_candidate_error_df(candidate_df: pd.DataFrame, target: Optional[float], target_mode: str) -> pd.DataFrame:
+    cdf = candidate_df.copy()
+    if "prediction" in cdf.columns:
+        cdf["prediction"] = pd.to_numeric(cdf["prediction"], errors="coerce")
+    if "d2_distance" in cdf.columns:
+        cdf["d2_distance"] = pd.to_numeric(cdf["d2_distance"], errors="coerce")
+    if "abs_error" in cdf.columns:
+        cdf["property_error"] = pd.to_numeric(cdf["abs_error"], errors="coerce")
+    elif "prediction" in cdf.columns and target is not None:
+        cdf["property_error"] = _property_error_from_predictions(
+            cdf["prediction"].to_numpy(dtype=np.float32),
+            target=target,
+            target_mode=target_mode,
+        )
+    elif "property_error_normed" in cdf.columns:
+        cdf["property_error"] = pd.to_numeric(cdf["property_error_normed"], errors="coerce")
+    else:
+        cdf["property_error"] = np.nan
+    return cdf
+
+
+def _plot_descriptor_detail_figure(property_name: str, descriptor_shift_df: pd.DataFrame, output_base: Path) -> None:
+    if plt is None or descriptor_shift_df.empty:
+        return
+    ds = descriptor_shift_df.copy().replace([np.inf, -np.inf], np.nan)
+    ds["cohens_d_topk_vs_ref"] = pd.to_numeric(ds.get("cohens_d_topk_vs_ref"), errors="coerce")
+    ds["ref_median"] = pd.to_numeric(ds.get("ref_median"), errors="coerce")
+    ds["topk_median"] = pd.to_numeric(ds.get("topk_median"), errors="coerce")
+    ds = ds.dropna(subset=["descriptor", "cohens_d_topk_vs_ref"])
+    if ds.empty:
+        return
+    ds["abs_d"] = np.abs(ds["cohens_d_topk_vs_ref"])
+    ds = ds.sort_values("abs_d", ascending=False).head(12).iloc[::-1]
+
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.4))
+        ax0, ax1 = axes
+
+        colors = [COLOR_ACCENT if v >= 0 else COLOR_SECONDARY for v in ds["cohens_d_topk_vs_ref"].to_numpy(dtype=np.float32)]
+        ax0.barh(ds["descriptor"].astype(str), ds["cohens_d_topk_vs_ref"], color=colors, alpha=0.9)
+        ax0.axvline(0.0, color="#111111", linewidth=1.0)
+        ax0.set_xlabel("Cohen's d (top-k vs reference)")
+        ax0.grid(axis="x", alpha=0.25)
+
+        pair_df = ds.dropna(subset=["ref_median", "topk_median"]).copy()
+        if not pair_df.empty:
+            ax1.scatter(pair_df["ref_median"], pair_df["topk_median"], s=50, color=COLOR_PRIMARY, alpha=0.9)
+            lo = float(np.nanmin(np.concatenate([pair_df["ref_median"].to_numpy(dtype=np.float32), pair_df["topk_median"].to_numpy(dtype=np.float32)])))
+            hi = float(np.nanmax(np.concatenate([pair_df["ref_median"].to_numpy(dtype=np.float32), pair_df["topk_median"].to_numpy(dtype=np.float32)])))
+            if np.isfinite(lo) and np.isfinite(hi):
+                ax1.plot([lo, hi], [lo, hi], linestyle="--", color=COLOR_MUTED, linewidth=1.1)
+            for _, row in pair_df.iterrows():
+                ax1.text(float(row["ref_median"]), float(row["topk_median"]), str(row["descriptor"]), fontsize=7, alpha=0.8)
+            ax1.set_xlabel("Reference median")
+            ax1.set_ylabel("Top-k median")
+            ax1.grid(alpha=0.25)
+        else:
+            ax1.text(0.5, 0.5, "No median values", ha="center", va="center")
+            ax1.set_axis_off()
+
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
+
+
+def _plot_motif_detail_figure(property_name: str, motif_df: pd.DataFrame, output_base: Path) -> None:
+    if plt is None or motif_df.empty:
+        return
+    mf = motif_df.copy().replace([np.inf, -np.inf], np.nan)
+    mf["log2_enrichment_topk_vs_ref"] = pd.to_numeric(mf.get("log2_enrichment_topk_vs_ref"), errors="coerce")
+    mf["ref_freq"] = pd.to_numeric(mf.get("ref_freq"), errors="coerce")
+    mf["candidate_freq"] = pd.to_numeric(mf.get("candidate_freq"), errors="coerce")
+    mf["topk_freq"] = pd.to_numeric(mf.get("topk_freq"), errors="coerce")
+    mf = mf.dropna(subset=["motif", "log2_enrichment_topk_vs_ref"])
+    if mf.empty:
+        return
+    mf["abs_log2"] = np.abs(mf["log2_enrichment_topk_vs_ref"])
+    mf = mf.sort_values("abs_log2", ascending=False).head(12).iloc[::-1]
+
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.4))
+        ax0, ax1 = axes
+
+        colors = [COLOR_ACCENT if v >= 0 else COLOR_SECONDARY for v in mf["log2_enrichment_topk_vs_ref"].to_numpy(dtype=np.float32)]
+        ax0.barh(mf["motif"].astype(str), mf["log2_enrichment_topk_vs_ref"], color=colors, alpha=0.9)
+        ax0.axvline(0.0, color="#111111", linewidth=1.0)
+        ax0.set_xlabel("log2(top-k / reference)")
+        ax0.grid(axis="x", alpha=0.25)
+
+        x = np.arange(len(mf), dtype=np.float32)
+        width = 0.25
+        ax1.bar(x - width, mf["ref_freq"].fillna(0.0).to_numpy(dtype=np.float32), width=width, color=COLOR_MUTED, alpha=0.8, label="Reference")
+        ax1.bar(x, mf["candidate_freq"].fillna(0.0).to_numpy(dtype=np.float32), width=width, color=COLOR_PRIMARY, alpha=0.8, label="Candidate")
+        ax1.bar(x + width, mf["topk_freq"].fillna(0.0).to_numpy(dtype=np.float32), width=width, color=COLOR_ACCENT, alpha=0.9, label="Top-k")
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(mf["motif"].astype(str), rotation=30, ha="right")
+        ax1.set_ylim(0, 1.0)
+        ax1.set_ylabel("Frequency")
+        ax1.grid(axis="y", alpha=0.25)
+        ax1.legend(loc="best")
+
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
+
+
+def _plot_physics_rule_detail_figure(property_name: str, physics_df: pd.DataFrame, output_base: Path) -> None:
+    if plt is None or physics_df.empty:
+        return
+    pf = physics_df.copy().replace([np.inf, -np.inf], np.nan)
+    pf["observed_delta_topk_vs_ref"] = pd.to_numeric(pf.get("observed_delta_topk_vs_ref"), errors="coerce")
+    pf = pf.dropna(subset=["feature", "observed_delta_topk_vs_ref"])
+    if pf.empty:
+        return
+
+    pf["abs_delta"] = np.abs(pf["observed_delta_topk_vs_ref"])
+    pf = pf.sort_values("abs_delta", ascending=False).copy()
+
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.4))
+        ax0, ax1 = axes
+
+        labels = [f"{r['feature']} ({r['source']})" for _, r in pf.iterrows()]
+        vals = pf["observed_delta_topk_vs_ref"].to_numpy(dtype=np.float32)
+        ok = pf["sign_match"].astype(bool).to_numpy(dtype=bool)
+        colors = [COLOR_ACCENT if m else COLOR_SECONDARY for m in ok]
+        y = np.arange(len(labels), dtype=np.float32)
+        ax0.barh(y, vals, color=colors, alpha=0.9)
+        ax0.set_yticks(y)
+        ax0.set_yticklabels(labels)
+        ax0.axvline(0.0, color="#111111", linewidth=1.0)
+        ax0.set_xlabel("Observed delta (top-k vs reference)")
+        ax0.grid(axis="x", alpha=0.25)
+
+        n_match = int(np.sum(ok))
+        n_total = int(len(ok))
+        n_mismatch = max(n_total - n_match, 0)
+        ax1.bar(["Match", "Mismatch"], [n_match, n_mismatch], color=[COLOR_ACCENT, COLOR_SECONDARY], alpha=0.9)
+        ax1.set_ylabel("Count")
+        ax1.grid(axis="y", alpha=0.25)
+        if n_total > 0:
+            ax1.text(0.5, max(n_match, n_mismatch, 1) * 1.02, f"Consistency: {n_match / n_total:.2f}", ha="center", va="bottom")
+
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
+
+
+def _plot_property_ood_landscape_figure(
+    property_name: str,
+    candidate_df: pd.DataFrame,
+    topk_df: pd.DataFrame,
+    target: Optional[float],
+    target_mode: str,
+    output_base: Path,
+) -> None:
+    if plt is None or candidate_df.empty:
+        return
+    cdf = _prepare_candidate_error_df(candidate_df, target=target, target_mode=target_mode)
+    if {"d2_distance", "property_error", "smiles"}.issubset(set(cdf.columns)) is False:
+        return
+
+    plot_df = cdf.dropna(subset=["d2_distance", "property_error"]).copy()
+    if plot_df.empty:
+        return
+    if len(plot_df) > 12000:
+        plot_df = plot_df.sample(n=12000, random_state=42)
+    topk_set = set(topk_df["smiles"].astype(str).tolist()) if "smiles" in topk_df.columns else set()
+    plot_df["is_topk"] = plot_df["smiles"].astype(str).isin(topk_set)
+    base = plot_df[~plot_df["is_topk"]]
+    tk = plot_df[plot_df["is_topk"]]
+
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5.4))
+        ax0, ax1 = axes
+
+        if not base.empty:
+            ax0.scatter(base["d2_distance"], base["property_error"], s=10, alpha=0.22, color=COLOR_PRIMARY, label="Candidates")
+        if not tk.empty:
+            ax0.scatter(tk["d2_distance"], tk["property_error"], s=26, alpha=0.9, color=COLOR_SECONDARY, label="F6 top-k")
+        ax0.set_xlabel("D2 distance (lower is better)")
+        ax0.set_ylabel("Property error")
+        ax0.grid(alpha=0.25)
+        ax0.legend(loc="best")
+
+        err_cand = _numeric_array(base["property_error"] if not base.empty else [])
+        err_top = _numeric_array(tk["property_error"] if not tk.empty else [])
+        if err_cand.size:
+            ax1.hist(err_cand, bins=40, color=COLOR_PRIMARY, alpha=0.5, label="Candidates")
+        if err_top.size:
+            ax1.hist(err_top, bins=25, color=COLOR_SECONDARY, alpha=0.75, label="F6 top-k")
+        if err_cand.size or err_top.size:
+            ax1.set_xlabel("Property error")
+            ax1.set_ylabel("Count")
+            ax1.grid(alpha=0.25)
+            ax1.legend(loc="best")
+        else:
+            ax1.text(0.5, 0.5, "No finite error values", ha="center", va="center")
+            ax1.set_axis_off()
+
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
+
+
+def _plot_nearest_neighbor_detail_figure(property_name: str, nn_df: pd.DataFrame, output_base: Path) -> None:
+    if plt is None or nn_df.empty:
+        return
+    ndf = nn_df.copy()
+    ndf["nearest_tanimoto"] = pd.to_numeric(ndf.get("nearest_tanimoto"), errors="coerce")
+    ndf["topk_prediction"] = pd.to_numeric(ndf.get("topk_prediction"), errors="coerce")
+    ndf["nearest_reference_value"] = pd.to_numeric(ndf.get("nearest_reference_value"), errors="coerce")
+
+    sims = _numeric_array(ndf["nearest_tanimoto"])
+    if sims.size == 0:
+        return
+
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        ax0, ax1, ax2 = axes
+
+        ax0.hist(sims, bins=18, color="#6D597A", alpha=0.85)
+        ax0.axvline(float(np.mean(sims)), color="#111111", linestyle="--", linewidth=1.1, label="Mean")
+        ax0.set_xlabel("Tanimoto")
+        ax0.set_ylabel("Count")
+        ax0.grid(alpha=0.25)
+        ax0.legend(loc="best")
+
+        pair_df = ndf.dropna(subset=["topk_prediction", "nearest_reference_value"]).copy()
+        if not pair_df.empty:
+            ax1.scatter(pair_df["nearest_reference_value"], pair_df["topk_prediction"], s=24, alpha=0.75, color=COLOR_PRIMARY)
+            lo = float(np.nanmin(np.concatenate([pair_df["nearest_reference_value"].to_numpy(dtype=np.float32), pair_df["topk_prediction"].to_numpy(dtype=np.float32)])))
+            hi = float(np.nanmax(np.concatenate([pair_df["nearest_reference_value"].to_numpy(dtype=np.float32), pair_df["topk_prediction"].to_numpy(dtype=np.float32)])))
+            if np.isfinite(lo) and np.isfinite(hi):
+                ax1.plot([lo, hi], [lo, hi], linestyle="--", color=COLOR_MUTED, linewidth=1.1)
+            ax1.set_xlabel("Nearest reference value")
+            ax1.set_ylabel("Top-k prediction")
+            ax1.grid(alpha=0.25)
+        else:
+            ax1.text(0.5, 0.5, "No paired values", ha="center", va="center")
+            ax1.set_axis_off()
+
+        delta_cols = [
+            ("delta_aromatic_ring_count", "Δ aromatic rings"),
+            ("delta_rotatable_bonds", "Δ rotatable bonds"),
+            ("delta_mol_wt", "Δ mol wt"),
+        ]
+        labels = []
+        vals = []
+        for col, label in delta_cols:
+            if col in ndf.columns:
+                arr = _numeric_array(ndf[col])
+                if arr.size:
+                    labels.append(label)
+                    vals.append(float(np.mean(arr)))
+        if vals:
+            colors = [COLOR_ACCENT if v >= 0 else COLOR_SECONDARY for v in vals]
+            ax2.bar(labels, vals, color=colors, alpha=0.9)
+            ax2.axhline(0.0, color="#111111", linewidth=1.0)
+            ax2.set_ylabel("Delta")
+            ax2.grid(axis="y", alpha=0.25)
+            ax2.tick_params(axis="x", rotation=20)
+        else:
+            ax2.text(0.5, 0.5, "No descriptor delta columns", ha="center", va="center")
+            ax2.set_axis_off()
+
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
+
+
+def _plot_property_figure_suite(
+    *,
+    property_name: str,
+    descriptor_shift_df: pd.DataFrame,
+    motif_df: pd.DataFrame,
+    physics_df: pd.DataFrame,
+    candidate_df: pd.DataFrame,
+    topk_df: pd.DataFrame,
+    nn_df: pd.DataFrame,
+    target: Optional[float],
+    target_mode: str,
+    figures_dir: Path,
+) -> None:
+    _plot_property_figure(
+        property_name=property_name,
+        descriptor_shift_df=descriptor_shift_df,
+        motif_df=motif_df,
+        candidate_df=candidate_df,
+        topk_df=topk_df,
+        nn_df=nn_df,
+        target=target,
+        target_mode=target_mode,
+        output_base=figures_dir / f"figure_f7_chem_physics_{property_name}",
+    )
+    _plot_descriptor_detail_figure(
+        property_name=property_name,
+        descriptor_shift_df=descriptor_shift_df,
+        output_base=figures_dir / f"figure_f7_descriptors_{property_name}",
+    )
+    _plot_motif_detail_figure(
+        property_name=property_name,
+        motif_df=motif_df,
+        output_base=figures_dir / f"figure_f7_motif_enrichment_{property_name}",
+    )
+    _plot_physics_rule_detail_figure(
+        property_name=property_name,
+        physics_df=physics_df,
+        output_base=figures_dir / f"figure_f7_physics_rules_{property_name}",
+    )
+    _plot_property_ood_landscape_figure(
+        property_name=property_name,
+        candidate_df=candidate_df,
+        topk_df=topk_df,
+        target=target,
+        target_mode=target_mode,
+        output_base=figures_dir / f"figure_f7_property_ood_landscape_{property_name}",
+    )
+    _plot_nearest_neighbor_detail_figure(
+        property_name=property_name,
+        nn_df=nn_df,
+        output_base=figures_dir / f"figure_f7_nearest_neighbor_{property_name}",
+    )
+
+
 def _plot_property_figure(
     property_name: str,
     descriptor_shift_df: pd.DataFrame,
@@ -683,15 +1040,13 @@ def _plot_property_figure(
     nn_df: pd.DataFrame,
     target: Optional[float],
     target_mode: str,
-    output_png: Path,
-    output_pdf: Path,
+    output_base: Path,
 ) -> None:
     if plt is None:
         return
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     ax1, ax2, ax3, ax4 = axes.ravel()
-    fig.suptitle(f"Step7 Science Analysis - {property_name}", fontsize=14, y=0.98)
 
     # Panel A: descriptor effect sizes (top-k vs reference)
     ds = descriptor_shift_df.copy()
@@ -701,7 +1056,6 @@ def _plot_property_figure(
         ds = ds.sort_values("abs_d", ascending=False).head(10).iloc[::-1]
         ax1.barh(ds["descriptor"], ds["cohens_d_topk_vs_ref"], color="#2C7FB8")
         ax1.axvline(0.0, color="black", linewidth=1)
-        ax1.set_title("A) Descriptor Shift (Cohen's d, top-k vs reference)")
         ax1.set_xlabel("Effect size")
     else:
         ax1.text(0.5, 0.5, "No descriptor shift data", ha="center", va="center")
@@ -715,7 +1069,6 @@ def _plot_property_figure(
         mf = mf.sort_values("abs_log2", ascending=False).head(10).iloc[::-1]
         ax2.barh(mf["motif"], mf["log2_enrichment_topk_vs_ref"], color="#41AB5D")
         ax2.axvline(0.0, color="black", linewidth=1)
-        ax2.set_title("B) Motif Enrichment (log2 top-k/ref)")
         ax2.set_xlabel("log2 enrichment")
     else:
         ax2.text(0.5, 0.5, "No motif data", ha="center", va="center")
@@ -751,7 +1104,6 @@ def _plot_property_figure(
                 ax3.scatter(base["d2_distance"], base["property_error"], s=12, alpha=0.35, label="Candidates", color="#9ECAE1")
             if not tk.empty:
                 ax3.scatter(tk["d2_distance"], tk["property_error"], s=24, alpha=0.9, label="F6 top-k", color="#D94801")
-            ax3.set_title("C) Property Error vs OOD Distance")
             ax3.set_xlabel("D2 distance (lower is closer)")
             ax3.set_ylabel("Property error/proxy")
             ax3.legend(frameon=False, loc="best", fontsize=9)
@@ -767,7 +1119,6 @@ def _plot_property_figure(
         vals = pd.to_numeric(nn_df["nearest_tanimoto"], errors="coerce").dropna().to_numpy(dtype=np.float32)
         if vals.size:
             ax4.hist(vals, bins=15, color="#756BB1", alpha=0.85)
-            ax4.set_title("D) Nearest Reference Similarity")
             ax4.set_xlabel("Tanimoto similarity")
             ax4.set_ylabel("Count")
         else:
@@ -778,41 +1129,35 @@ def _plot_property_figure(
         ax4.set_axis_off()
 
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    _safe_mkdir(output_png)
-    _safe_mkdir(output_pdf)
-    fig.savefig(output_png, dpi=300, bbox_inches="tight")
-    fig.savefig(output_pdf, dpi=300, bbox_inches="tight")
+    _save_figure_png(fig, output_base)
     plt.close(fig)
 
 
-def _plot_summary_figure(metrics_df: pd.DataFrame, output_png: Path, output_pdf: Path) -> None:
+def _plot_summary_figure(metrics_df: pd.DataFrame, output_base: Path) -> None:
     if plt is None or metrics_df.empty:
         return
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+    with plt.rc_context(PUBLICATION_STYLE):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.8))
 
-    df = metrics_df.copy().sort_values("property")
-    props = df["property"].astype(str).tolist()
+        df = metrics_df.copy().sort_values("property")
+        props = df["property"].astype(str).tolist()
 
-    axes[0].bar(props, pd.to_numeric(df["descriptor_consistency_rate"], errors="coerce").fillna(0.0), color="#2C7FB8")
-    axes[0].set_ylim(0, 1)
-    axes[0].set_title("Descriptor Consistency")
-    axes[0].set_ylabel("Rate")
+        axes[0].bar(props, pd.to_numeric(df["descriptor_consistency_rate"], errors="coerce").fillna(0.0), color=COLOR_PRIMARY)
+        axes[0].set_ylim(0, 1)
+        axes[0].set_ylabel("Rate")
+        axes[0].grid(axis="y", alpha=0.25)
 
-    axes[1].bar(props, pd.to_numeric(df["topk_hit_rate"], errors="coerce").fillna(0.0), color="#41AB5D")
-    axes[1].set_ylim(0, 1)
-    axes[1].set_title("Top-k Hit Rate")
+        axes[1].bar(props, pd.to_numeric(df["topk_hit_rate"], errors="coerce").fillna(0.0), color=COLOR_ACCENT)
+        axes[1].set_ylim(0, 1)
+        axes[1].grid(axis="y", alpha=0.25)
 
-    axes[2].bar(props, pd.to_numeric(df["mean_nn_similarity"], errors="coerce").fillna(0.0), color="#756BB1")
-    axes[2].set_ylim(0, 1)
-    axes[2].set_title("NN Similarity to Reference")
+        axes[2].bar(props, pd.to_numeric(df["mean_nn_similarity"], errors="coerce").fillna(0.0), color="#6D597A")
+        axes[2].set_ylim(0, 1)
+        axes[2].grid(axis="y", alpha=0.25)
 
-    fig.suptitle("Step7 Cross-Property Science Summary", fontsize=13, y=1.02)
-    fig.tight_layout()
-    _safe_mkdir(output_png)
-    _safe_mkdir(output_pdf)
-    fig.savefig(output_png, dpi=300, bbox_inches="tight")
-    fig.savefig(output_pdf, dpi=300, bbox_inches="tight")
-    plt.close(fig)
+        fig.tight_layout()
+        _save_figure_png(fig, output_base)
+        plt.close(fig)
 
 
 def main(args):
@@ -1059,19 +1404,17 @@ def main(args):
         )
 
         if generate_figures:
-            png_path = step_dirs["figures_dir"] / f"figure_f7_chem_physics_{prop}.png"
-            pdf_path = step_dirs["figures_dir"] / f"figure_f7_chem_physics_{prop}.pdf"
-            _plot_property_figure(
+            _plot_property_figure_suite(
                 property_name=prop,
                 descriptor_shift_df=shift_df,
                 motif_df=motif_df,
+                physics_df=physics_df,
                 candidate_df=candidate_df,
                 topk_df=topk_df,
                 nn_df=nn_df,
                 target=target,
                 target_mode=target_mode,
-                output_png=png_path,
-                output_pdf=pdf_path,
+                figures_dir=step_dirs["figures_dir"],
             )
 
     if not metric_rows:
@@ -1127,8 +1470,7 @@ def main(args):
     if generate_figures:
         _plot_summary_figure(
             metrics_df=metrics_df,
-            output_png=step_dirs["figures_dir"] / "figure_f7_chem_physics_all_properties.png",
-            output_pdf=step_dirs["figures_dir"] / "figure_f7_chem_physics_all_properties.pdf",
+            output_base=step_dirs["figures_dir"] / "figure_f7_chem_physics_all_properties",
         )
 
     save_json(

@@ -13,7 +13,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -32,8 +32,54 @@ from src.utils.config import load_config, save_config
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json
 from shared.ood_metrics import knn_distances
 
+try:  # pragma: no cover
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
+try:
+    from rdkit import Chem, rdBase
+    from rdkit.Chem import Descriptors, rdMolDescriptors
+    rdBase.DisableLog("rdApp.error")
+    rdBase.DisableLog("rdApp.warning")
+except Exception:  # pragma: no cover
+    Chem = None
+    Descriptors = None
+    rdMolDescriptors = None
+    rdBase = None
+
 
 SUPPORTED_VIEWS = ("smiles", "smiles_bpe", "selfies", "group_selfies", "graph")
+SUPPORTED_DESCRIPTOR_CONSTRAINTS = {
+    "ring_count",
+    "aromatic_ring_count",
+    "fraction_csp3",
+    "rotatable_bonds",
+    "tpsa",
+    "logp",
+    "sa_score",
+}
+
+
+PUBLICATION_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 8,
+    "axes.linewidth": 0.9,
+    "lines.linewidth": 1.8,
+    "figure.dpi": 300,
+    "savefig.dpi": 600,
+}
+
+if plt is not None:
+    plt.rcParams.update(PUBLICATION_STYLE)
 
 _STEP5_MODULE = None
 
@@ -75,6 +121,87 @@ def _to_float_or_none(value):
     if not text:
         return None
     return float(text)
+
+
+def _save_figure_png(fig, output_base: Path) -> None:
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
+
+
+def _plot_f6_objective_diagnostics(
+    *,
+    valid_df: pd.DataFrame,
+    top_df: pd.DataFrame,
+    property_name: str,
+    normalized_term_weights: Dict[str, float],
+    figures_dir: Path,
+) -> None:
+    if plt is None or valid_df.empty:
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    ax0, ax1, ax2, ax3 = axes.reshape(-1)
+
+    # A) objective distribution.
+    obj_all = pd.to_numeric(valid_df.get("conservative_objective", pd.Series(dtype=float)), errors="coerce").dropna()
+    obj_top = pd.to_numeric(top_df.get("conservative_objective", pd.Series(dtype=float)), errors="coerce").dropna()
+    if len(obj_all):
+        ax0.hist(obj_all.to_numpy(dtype=np.float32), bins=40, color="#4E79A7", alpha=0.65, label="All scored")
+    if len(obj_top):
+        ax0.hist(obj_top.to_numpy(dtype=np.float32), bins=25, color="#E15759", alpha=0.75, label="Top-k")
+    ax0.set_xlabel("Objective (lower is better)")
+    ax0.set_ylabel("Count")
+    ax0.grid(alpha=0.25)
+    ax0.legend(loc="best", fontsize=8)
+
+    # B) property vs OOD trade-off.
+    x = pd.to_numeric(valid_df.get("d2_distance_objective", pd.Series(dtype=float)), errors="coerce")
+    y = pd.to_numeric(valid_df.get("property_error_objective", pd.Series(dtype=float)), errors="coerce")
+    c = pd.to_numeric(valid_df.get("conservative_objective", pd.Series(dtype=float)), errors="coerce")
+    mask = x.notna() & y.notna() & c.notna()
+    if mask.any():
+        sc = ax1.scatter(x[mask], y[mask], c=c[mask], cmap="viridis", s=18, alpha=0.7)
+        ax1.set_xlabel("OOD objective term")
+        ax1.set_ylabel("Property objective term")
+        ax1.grid(alpha=0.25)
+        fig.colorbar(sc, ax=ax1, fraction=0.046, pad=0.04, label="Conservative objective")
+    else:
+        ax1.text(0.5, 0.5, "No finite objective points", ha="center", va="center")
+        ax1.set_axis_off()
+
+    # C) objective term weights.
+    weight_items = [(k, float(v)) for k, v in normalized_term_weights.items() if np.isfinite(float(v))]
+    if weight_items:
+        labels = [k for k, _ in weight_items]
+        values = np.asarray([v for _, v in weight_items], dtype=np.float32)
+        bars = ax2.bar(labels, values, color="#59A14F", alpha=0.85)
+        ax2.set_ylim(0, max(1.0, float(np.max(values) + 0.05)))
+        ax2.set_ylabel("Weight")
+        ax2.grid(axis="y", alpha=0.25)
+        ax2.tick_params(axis="x", rotation=30)
+        for bar, val in zip(bars, values):
+            ax2.text(bar.get_x() + bar.get_width() / 2.0, float(val), f"{float(val):.2f}", ha="center", va="bottom", fontsize=8)
+    else:
+        ax2.text(0.5, 0.5, "No active objective terms", ha="center", va="center")
+        ax2.set_axis_off()
+
+    # D) cumulative hits by objective rank.
+    if "property_hit" in valid_df.columns and "conservative_rank" in valid_df.columns:
+        ranked = valid_df.sort_values("conservative_rank").copy()
+        hits = ranked["property_hit"].astype(bool).to_numpy(dtype=np.int64)
+        cum_hits = np.cumsum(hits)
+        x_rank = np.arange(1, len(cum_hits) + 1, dtype=np.int64)
+        ax3.plot(x_rank, cum_hits, color="#4E79A7", linewidth=2.0)
+        ax3.set_xlabel("Objective rank")
+        ax3.set_ylabel("Cumulative hits")
+        ax3.grid(alpha=0.25)
+    else:
+        ax3.text(0.5, 0.5, "Missing rank/hit columns", ha="center", va="center")
+        ax3.set_axis_off()
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / f"figure_f6_ood_objective_diagnostics_{property_name}")
+    plt.close(fig)
 
 
 def _normalize_property_name(value) -> str:
@@ -151,6 +278,181 @@ def _merge_property_maps(*maps: Optional[dict]) -> dict:
         for key, value in normalized.items():
             merged[key] = value
     return merged
+
+
+def _normalize_descriptor_constraints(raw: Any) -> Dict[str, dict]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("descriptor_constraints must be a dict mapping descriptor->spec.")
+
+    out: Dict[str, dict] = {}
+    for key, value in raw.items():
+        name = str(key).strip().lower()
+        if not name:
+            continue
+        if name not in SUPPORTED_DESCRIPTOR_CONSTRAINTS:
+            raise ValueError(
+                f"Unsupported descriptor constraint '{name}'. "
+                f"Supported: {sorted(SUPPORTED_DESCRIPTOR_CONSTRAINTS)}"
+            )
+
+        if isinstance(value, dict):
+            target = _to_float_or_none(value.get("target"))
+            mode = str(value.get("mode", "ge")).strip().lower() or "ge"
+            epsilon = _to_float_or_none(value.get("epsilon"))
+            weight = _to_float_or_none(value.get("weight"))
+        else:
+            target = _to_float_or_none(value)
+            mode = "ge"
+            epsilon = None
+            weight = None
+
+        if target is None:
+            continue
+        if mode not in {"window", "ge", "le"}:
+            raise ValueError(f"descriptor constraint mode must be window|ge|le (got {mode}).")
+        if epsilon is None:
+            epsilon = 0.0
+        if weight is None:
+            weight = 1.0
+        if float(weight) <= 0:
+            continue
+
+        out[name] = {
+            "target": float(target),
+            "mode": mode,
+            "epsilon": float(epsilon),
+            "weight": float(weight),
+        }
+    return out
+
+
+def _smiles_to_mol(smiles: str):
+    if Chem is None:
+        return None
+    text = str(smiles).strip()
+    if not text:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(text.replace("*", "[H]"))
+        if mol is not None:
+            return mol
+    except Exception:
+        pass
+    try:
+        return Chem.MolFromSmiles(text)
+    except Exception:
+        return None
+
+
+def _descriptor_value(mol, descriptor_name: str) -> float:
+    if mol is None:
+        return float("nan")
+    if descriptor_name == "ring_count":
+        return float(Descriptors.RingCount(mol)) if Descriptors is not None else float("nan")
+    if descriptor_name == "aromatic_ring_count":
+        return float(rdMolDescriptors.CalcNumAromaticRings(mol)) if rdMolDescriptors is not None else float("nan")
+    if descriptor_name == "fraction_csp3":
+        return float(rdMolDescriptors.CalcFractionCSP3(mol)) if rdMolDescriptors is not None else float("nan")
+    if descriptor_name == "rotatable_bonds":
+        return float(Descriptors.NumRotatableBonds(mol)) if Descriptors is not None else float("nan")
+    if descriptor_name == "tpsa":
+        return float(Descriptors.TPSA(mol)) if Descriptors is not None else float("nan")
+    if descriptor_name == "logp":
+        return float(Descriptors.MolLogP(mol)) if Descriptors is not None else float("nan")
+    if descriptor_name == "sa_score":
+        return float("nan")
+    raise ValueError(f"Unsupported descriptor_name={descriptor_name}")
+
+
+def _descriptor_vector_from_smiles(smiles_list: list[str], descriptor_name: str) -> np.ndarray:
+    values = np.full((len(smiles_list),), np.nan, dtype=np.float32)
+    if descriptor_name == "sa_score":
+        return values
+    if Chem is None:
+        return values
+    for idx, text in enumerate(smiles_list):
+        mol = _smiles_to_mol(str(text))
+        values[idx] = _descriptor_value(mol, descriptor_name)
+    return values
+
+
+def _load_d1_to_d2_mean_distance(results_dir: Path, k: int) -> float:
+    metric_candidates = [
+        results_dir / "step4_ood" / "metrics" / "metrics_ood.csv",
+        results_dir / "metrics_ood.csv",
+        results_dir / "step4_ood" / "metrics_ood.csv",
+    ]
+    for path in metric_candidates:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            continue
+        if "d1_to_d2_mean_dist" not in df.columns or df.empty:
+            continue
+        val = _to_float_or_none(df.iloc[0]["d1_to_d2_mean_dist"])
+        if val is not None and np.isfinite(val):
+            return float(val)
+
+    d1_candidates = [
+        results_dir / "step4_ood" / "files" / "embeddings_d1_aligned.npy",
+        results_dir / "embeddings_d1_aligned.npy",
+        results_dir / "embeddings_d1.npy",
+    ]
+    d2_candidates = [
+        results_dir / "step4_ood" / "files" / "embeddings_d2_aligned.npy",
+        results_dir / "embeddings_d2_aligned.npy",
+        results_dir / "embeddings_d2.npy",
+    ]
+    d1_path = next((p for p in d1_candidates if p.exists()), None)
+    d2_path = next((p for p in d2_candidates if p.exists()), None)
+    if d1_path is None or d2_path is None:
+        return float("nan")
+    d1 = np.load(d1_path)
+    d2 = np.load(d2_path)
+    d1_to_d2 = knn_distances(d1, d2, k=max(int(k), 1))
+    return float(np.mean(d1_to_d2)) if d1_to_d2.size else float("nan")
+
+
+def _save_augmented_ood_metrics(
+    *,
+    results_dir: Path,
+    representation: str,
+    model_size: str,
+    generated_d2_distance: np.ndarray,
+    ood_k: int,
+) -> None:
+    finite = np.asarray(generated_d2_distance, dtype=np.float32).reshape(-1)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return
+
+    d1_to_d2_mean = _load_d1_to_d2_mean_distance(results_dir, k=ood_k)
+    gen_mean = float(np.mean(finite))
+    frac_near = float(np.mean(finite <= d1_to_d2_mean)) if np.isfinite(d1_to_d2_mean) else np.nan
+
+    row = {
+        "method": "Multi_View_Foundation",
+        "representation": representation,
+        "model_size": model_size,
+        "d1_to_d2_mean_dist": round(float(d1_to_d2_mean), 4) if np.isfinite(d1_to_d2_mean) else np.nan,
+        "generated_to_d2_mean_dist": round(gen_mean, 4),
+        "frac_generated_near_d2": round(frac_near, 4) if np.isfinite(frac_near) else np.nan,
+    }
+    out_path = results_dir / "step4_ood" / "metrics" / "metrics_ood.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    save_csv(
+        pd.DataFrame([row]),
+        out_path,
+        legacy_paths=[
+            results_dir / "metrics_ood.csv",
+            results_dir / "step4_ood" / "metrics_ood.csv",
+        ],
+        index=False,
+    )
 
 
 def _normalize_scores(values: np.ndarray, mode: str) -> np.ndarray:
@@ -512,6 +814,14 @@ def main(args):
     if sa_weight is None:
         sa_weight = 0.0
 
+    descriptor_weight = _to_float_or_none(args.descriptor_weight)
+    if descriptor_weight is None:
+        descriptor_weight = _to_float_or_none(cfg_step6.get("descriptor_weight"))
+    if descriptor_weight is None:
+        descriptor_weight = 0.0
+
+    descriptor_constraints = _normalize_descriptor_constraints(cfg_step6.get("descriptor_constraints"))
+
     normalization = str(args.normalization or cfg_step6.get("normalization", "minmax")).strip().lower()
     ood_k = _to_int_or_none(args.ood_k)
     if ood_k is None:
@@ -647,12 +957,23 @@ def main(args):
         pred_unc = np.nan_to_num(pred_unc, nan=0.0, posinf=0.0, neginf=0.0)
     else:
         pred_unc = np.zeros((len(valid_df),), dtype=np.float32)
+    if pred_unc.size:
+        unc_span = float(np.max(pred_unc) - np.min(pred_unc))
+        uncertainty_has_signal = bool(np.isfinite(unc_span) and unc_span > 1e-8)
+    else:
+        uncertainty_has_signal = False
+    if (not uncertainty_has_signal) and float(uncertainty_weight) > 0:
+        print("[F6] Warning: uncertainty term disabled because prediction_uncertainty has no variation.")
 
     hit_mask = compute_property_hits(pred, target_value=float(target), epsilon=float(epsilon), target_mode=target_mode)
     property_error_raw = compute_property_error(pred, target_value=float(target), target_mode=target_mode)
     property_error_obj = _normalize_scores(property_error_raw, normalization)
     d2_obj = _normalize_scores(d2, normalization)
-    uncertainty_obj = _normalize_scores(pred_unc, normalization)
+    if uncertainty_has_signal:
+        uncertainty_obj = _normalize_scores(pred_unc, normalization)
+    else:
+        uncertainty_obj = np.zeros((len(valid_df),), dtype=np.float32)
+    effective_uncertainty_weight = float(uncertainty_weight) if uncertainty_has_signal else 0.0
 
     available_committee_props = sorted(
         {
@@ -716,12 +1037,52 @@ def main(args):
         sa_raw = np.zeros((len(valid_df),), dtype=np.float32)
     sa_obj = _normalize_scores(sa_raw, normalization)
 
+    descriptor_raw_total = np.zeros((len(valid_df),), dtype=np.float32)
+    descriptor_obj = np.zeros((len(valid_df),), dtype=np.float32)
+    active_descriptor_constraints: list[str] = []
+    descriptor_den = 0.0
+    if descriptor_constraints and float(descriptor_weight) > 0:
+        smiles_values = valid_df["smiles"].astype(str).tolist()
+        for descriptor_name, spec in descriptor_constraints.items():
+            if descriptor_name == "sa_score" and "sa_score" in valid_df.columns:
+                descriptor_values = pd.to_numeric(valid_df["sa_score"], errors="coerce").to_numpy(dtype=np.float32)
+            else:
+                descriptor_values = _descriptor_vector_from_smiles(smiles_values, descriptor_name)
+            finite_desc = descriptor_values[np.isfinite(descriptor_values)]
+            if finite_desc.size == 0:
+                continue
+            fill_desc = float(np.nanmedian(finite_desc))
+            descriptor_values = np.nan_to_num(descriptor_values, nan=fill_desc, posinf=fill_desc, neginf=fill_desc)
+            valid_df[f"descriptor_{descriptor_name}"] = descriptor_values
+
+            violation_raw = compute_property_error(
+                descriptor_values,
+                target_value=float(spec["target"]),
+                target_mode=str(spec["mode"]),
+            )
+            violation_obj = _normalize_scores(violation_raw, normalization)
+            valid_df[f"descriptor_violation_{descriptor_name}"] = violation_raw
+
+            w_desc = float(spec["weight"])
+            if w_desc <= 0:
+                continue
+            descriptor_raw_total += w_desc * violation_raw
+            descriptor_obj += w_desc * violation_obj
+            descriptor_den += w_desc
+            active_descriptor_constraints.append(descriptor_name)
+    if descriptor_den > 0:
+        descriptor_raw_total = (descriptor_raw_total / descriptor_den).astype(np.float32, copy=False)
+        descriptor_obj = (descriptor_obj / descriptor_den).astype(np.float32, copy=False)
+    elif descriptor_constraints and float(descriptor_weight) > 0:
+        print("[F6] Warning: descriptor constraints configured but no valid descriptor values were available.")
+
     term_specs = [
         ("property", property_error_obj, float(property_weight)),
         ("ood", d2_obj, float(ood_weight)),
-        ("uncertainty", uncertainty_obj, float(uncertainty_weight)),
+        ("uncertainty", uncertainty_obj, float(effective_uncertainty_weight)),
         ("constraint", constraint_obj, float(constraint_weight) if active_constraint_props else 0.0),
         ("sa", sa_obj, float(sa_weight) if "sa_score" in valid_df.columns else 0.0),
+        ("descriptor", descriptor_obj, float(descriptor_weight) if active_descriptor_constraints else 0.0),
     ]
     active_terms = [(name, values, weight) for name, values, weight in term_specs if float(weight) > 0]
     if not active_terms:
@@ -745,6 +1106,8 @@ def main(args):
     valid_df["constraint_violation_total"] = constraint_raw_total
     valid_df["constraint_objective"] = constraint_obj
     valid_df["sa_objective"] = sa_obj
+    valid_df["descriptor_violation_total"] = descriptor_raw_total
+    valid_df["descriptor_objective"] = descriptor_obj
     valid_df["conservative_objective"] = objective
     valid_df["conservative_rank"] = objective_rank
     # Backward-compatibility aliases.
@@ -786,8 +1149,11 @@ def main(args):
         "objective_uncertainty_weight": float(normalized_term_weights.get("uncertainty", 0.0)),
         "objective_constraint_weight": float(normalized_term_weights.get("constraint", 0.0)),
         "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
+        "objective_descriptor_weight": float(normalized_term_weights.get("descriptor", 0.0)),
         "n_constraint_properties": int(len(active_constraint_props)),
         "constraint_properties": ",".join(active_constraint_props),
+        "n_descriptor_constraints": int(len(active_descriptor_constraints)),
+        "descriptor_constraints": ",".join(active_descriptor_constraints),
         "ood_views_requested": ",".join(ood_views),
         "ood_views_used": ",".join(ood_views_used),
         "ood_view_aggregation": "mean",
@@ -808,6 +1174,7 @@ def main(args):
         "top_k_mean_abs_error": round(float(np.abs(top_df["prediction"] - float(target)).mean()) if len(top_df) else 0.0, 6),
         "top_k_mean_d2_distance": round(float(top_df["d2_distance"].mean()) if len(top_df) else 0.0, 6),
         "top_k_mean_constraint_violation": round(float(top_df["constraint_violation_total"].mean()) if len(top_df) else 0.0, 6),
+        "top_k_mean_descriptor_violation": round(float(top_df["descriptor_violation_total"].mean()) if len(top_df) else 0.0, 6),
         "top_k_mean_objective": round(float(top_df["ood_aware_objective"].mean()) if len(top_df) else 0.0, 6),
         "top_k_mean_conservative_objective": round(float(top_df["conservative_objective"].mean()) if len(top_df) else 0.0, 6),
     }
@@ -865,7 +1232,9 @@ def main(args):
             "objective_uncertainty_weight": float(normalized_term_weights.get("uncertainty", 0.0)),
             "objective_constraint_weight": float(normalized_term_weights.get("constraint", 0.0)),
             "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
+            "objective_descriptor_weight": float(normalized_term_weights.get("descriptor", 0.0)),
             "constraint_properties": active_constraint_props,
+            "descriptor_constraints": active_descriptor_constraints,
             "ood_views_requested": ood_views,
             "ood_views_used": ood_views_used,
             "ood_view_aggregation": "mean",
@@ -894,7 +1263,9 @@ def main(args):
             "objective_uncertainty_weight": float(normalized_term_weights.get("uncertainty", 0.0)),
             "objective_constraint_weight": float(normalized_term_weights.get("constraint", 0.0)),
             "objective_sa_weight": float(normalized_term_weights.get("sa", 0.0)),
+            "objective_descriptor_weight": float(normalized_term_weights.get("descriptor", 0.0)),
             "constraint_properties": active_constraint_props,
+            "descriptor_constraints": active_descriptor_constraints,
             "ood_views_requested": ood_views,
             "ood_views_used": ood_views_used,
             "ood_view_aggregation": "mean",
@@ -906,6 +1277,29 @@ def main(args):
         step_dirs["files_dir"] / f"run_meta_{property_name}.json",
         legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"run_meta_{property_name}.json"],
     )
+
+    _save_augmented_ood_metrics(
+        results_dir=results_dir,
+        representation=representation,
+        model_size=str(model_size),
+        generated_d2_distance=pd.to_numeric(df.get("d2_distance", pd.Series(dtype=float)), errors="coerce").to_numpy(dtype=np.float32),
+        ood_k=int(ood_k),
+    )
+
+    generate_figures = args.generate_figures
+    if generate_figures is None:
+        generate_figures = _to_bool(cfg_step6.get("generate_figures", True), True)
+    if generate_figures and plt is None:
+        print("Warning: matplotlib unavailable; skipping F6 figures.")
+        generate_figures = False
+    if generate_figures:
+        _plot_f6_objective_diagnostics(
+            valid_df=valid_df,
+            top_df=top_df,
+            property_name=property_name,
+            normalized_term_weights=normalized_term_weights,
+            figures_dir=step_dirs["figures_dir"],
+        )
 
     print(f"Saved metrics_inverse_ood_objective.csv to {results_dir}")
 
@@ -925,6 +1319,7 @@ if __name__ == "__main__":
     parser.add_argument("--uncertainty_weight", type=float, default=None)
     parser.add_argument("--constraint_weight", type=float, default=None)
     parser.add_argument("--sa_weight", type=float, default=None)
+    parser.add_argument("--descriptor_weight", type=float, default=None)
     parser.add_argument("--constraint_properties", type=str, default=None, help="Comma-separated soft-constraint properties.")
     parser.add_argument("--normalization", type=str, default=None, choices=["minmax", "rank", "none"])
     parser.add_argument("--ood_k", type=int, default=None)
@@ -936,4 +1331,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_compute_d2_distance_if_missing", dest="compute_d2_distance_if_missing", action="store_false")
     parser.set_defaults(compute_d2_distance_if_missing=None)
     parser.add_argument("--recompute_d2_distance", action="store_true")
+    parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
+    parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
+    parser.set_defaults(generate_figures=None)
     main(parser.parse_args())

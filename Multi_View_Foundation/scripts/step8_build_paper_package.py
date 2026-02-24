@@ -481,13 +481,27 @@ def main(args):
         )
 
     if include_figures:
-        step7_figure_dirs = _existing_dirs(
+        step_figure_dirs = _existing_dirs(
             [
+                results_dir / "step1_alignment_embeddings" / "figures",
+                results_dir / "step2_retrieval" / "figures",
+                results_dir / "step3_property" / "figures",
+                results_dir / "step4_ood" / "figures",
+                results_dir / "step5_foundation_inverse" / "figures",
+                results_dir / "step6_ood_aware_inverse" / "figures",
                 results_dir / "step7_chem_physics_analysis" / "figures",
-                results_dir / "step7_chem_physics_analysis",
             ]
         )
-        for src in _collect_glob_unique(step7_figure_dirs, ["figure_f7_chem_physics*.png", "figure_f7_chem_physics*.pdf"]):
+        figure_patterns = [
+            "figure_f1_*.png",
+            "figure_f2_*.png",
+            "figure_f3_*.png",
+            "figure_f4_*.png",
+            "figure_f5_*.png",
+            "figure_f6_*.png",
+            "figure_f7_*.png",
+        ]
+        for src in _collect_glob_unique(step_figure_dirs, figure_patterns):
             _copy_file(
                 src,
                 figures_dir / src.name,
