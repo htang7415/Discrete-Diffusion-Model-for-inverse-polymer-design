@@ -3,10 +3,8 @@
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from tqdm import tqdm
-
-from .tokenizer import PSmilesTokenizer
 
 
 class PolymerDataset(Dataset):
@@ -15,7 +13,7 @@ class PolymerDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
-        tokenizer: PSmilesTokenizer,
+        tokenizer: Any,
         smiles_col: str = 'p_smiles',
         max_length: Optional[int] = None,
         cache_tokenization: bool = False
@@ -87,7 +85,7 @@ class PropertyDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
-        tokenizer: PSmilesTokenizer,
+        tokenizer: Any,
         property_name: str,
         smiles_col: str = 'p_smiles',
         max_length: Optional[int] = None,

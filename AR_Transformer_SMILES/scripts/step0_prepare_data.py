@@ -18,7 +18,7 @@ import numpy as np
 from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.data.data_loader import PolymerDataLoader
-from src.data.tokenizer import PSmilesTokenizer
+from src.data.hf_tokenizer import HFPSmilesTokenizer
 from src.utils.reproducibility import seed_everything, save_run_metadata
 from shared.unlabeled_data import (
     require_preprocessed_unlabeled_splits,
@@ -61,14 +61,17 @@ def main(args):
 
     # Build tokenizer vocabulary from training data only
     print("\n2. Building tokenizer vocabulary...")
-    tokenizer = PSmilesTokenizer(max_length=config['tokenizer']['max_length'])
+    tokenizer = HFPSmilesTokenizer(max_length=config['tokenizer']['max_length'])
     vocab = tokenizer.build_vocab(train_df['p_smiles'].tolist())
     print(f"Vocabulary size: {tokenizer.vocab_size}")
 
-    # Save tokenizer
+    # Save tokenizer (legacy + HF-pretrained format)
     tokenizer_path = results_dir / 'tokenizer.json'
     tokenizer.save(tokenizer_path)
+    hf_tokenizer_dir = results_dir / 'tokenizer_hf'
+    tokenizer.save_pretrained(str(hf_tokenizer_dir))
     print(f"Tokenizer saved to: {tokenizer_path}")
+    print(f"HF tokenizer saved to: {hf_tokenizer_dir}")
 
     # Verify round-trip invertibility
     print("\n3. Verifying tokenization invertibility...")

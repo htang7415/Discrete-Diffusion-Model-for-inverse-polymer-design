@@ -135,26 +135,17 @@ class BackboneTuner:
         Returns:
             Final validation loss.
         """
-        from ..model.backbone import DiffusionBackbone
-        from ..model.autoregressive import AutoregressiveLM
+        from ..model.hf_ar import build_polymer_ar_model
 
         # Create proxy model (smaller)
         proxy_config = self.config['proxy_backbone']
-        backbone = DiffusionBackbone(
-            vocab_size=self.tokenizer.vocab_size,
-            hidden_size=proxy_config['hidden_size'],
-            num_layers=proxy_config['num_layers'],
-            num_heads=proxy_config['num_heads'],
-            ffn_hidden_size=proxy_config['ffn_hidden_size'],
-            max_position_embeddings=proxy_config['max_position_embeddings'],
-            num_diffusion_steps=self.config['diffusion']['num_steps'],
-            dropout=params.get('dropout', 0.1),
-            pad_token_id=self.tokenizer.pad_token_id
-        )
+        proxy_config = dict(proxy_config)
+        proxy_config['dropout'] = params.get('dropout', 0.1)
 
-        model = AutoregressiveLM(
-            backbone=backbone,
-            pad_token_id=self.tokenizer.pad_token_id
+        model = build_polymer_ar_model(
+            backbone_config=proxy_config,
+            tokenizer=self.tokenizer,
+            diffusion_config=self.config['diffusion'],
         ).to(self.device)
 
         # Optimizer
@@ -178,7 +169,7 @@ class BackboneTuner:
                 attention_mask = batch['attention_mask'].to(self.device)
 
                 optimizer.zero_grad()
-                outputs = model(input_ids, attention_mask)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
                 loss = outputs['loss']
                 loss.backward()
 
@@ -203,7 +194,7 @@ class BackboneTuner:
             for batch in val_loader:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
-                outputs = model(input_ids, attention_mask)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
                 total_loss += outputs['loss'].item()
                 num_batches += 1
 

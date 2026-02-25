@@ -22,10 +22,9 @@ from src.utils.model_scales import (
     get_model_config, get_training_config, estimate_params,
     get_results_dir, print_model_info
 )
-from src.data.tokenizer import PSmilesTokenizer
+from src.data.hf_tokenizer import load_polymer_tokenizer
 from src.data.dataset import PolymerDataset, collate_fn
-from src.model.backbone import DiffusionBackbone
-from src.model.autoregressive import AutoregressiveLM
+from src.model.hf_ar import build_polymer_ar_model, load_polymer_ar_checkpoint
 from src.training.trainer_backbone import BackboneTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
 from shared.unlabeled_data import require_preprocessed_unlabeled_splits
@@ -98,11 +97,7 @@ def main(args):
     # Load tokenizer (from base results dir which has the tokenizer)
     if is_main_process:
         print("\n1. Loading tokenizer...")
-    tokenizer_path = results_dir / 'tokenizer.json'
-    if not tokenizer_path.exists():
-        # Fall back to base results dir
-        tokenizer_path = Path(base_results_dir) / 'tokenizer.json'
-    tokenizer = PSmilesTokenizer.load(tokenizer_path)
+    tokenizer = load_polymer_tokenizer(results_dir, Path(base_results_dir))
     if is_main_process:
         print(f"Vocabulary size: {tokenizer.vocab_size}")
 
@@ -243,22 +238,7 @@ def main(args):
     # Create model
     if is_main_process:
         print("\n3. Creating model...")
-    backbone = DiffusionBackbone(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=backbone_config['hidden_size'],
-        num_layers=backbone_config['num_layers'],
-        num_heads=backbone_config['num_heads'],
-        ffn_hidden_size=backbone_config['ffn_hidden_size'],
-        max_position_embeddings=backbone_config['max_position_embeddings'],
-        num_diffusion_steps=config['diffusion']['num_steps'],
-        dropout=backbone_config['dropout'],
-        pad_token_id=tokenizer.pad_token_id
-    )
-
-    model = AutoregressiveLM(
-        backbone=backbone,
-        pad_token_id=tokenizer.pad_token_id
-    )
+    model = build_polymer_ar_model(backbone_config, tokenizer, config['diffusion'])
 
     # Count parameters
     num_params = sum(p.numel() for p in model.parameters())
@@ -271,12 +251,7 @@ def main(args):
     if args.resume:
         if is_main_process:
             print(f"\nResuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
-        # Handle torch.compile() state dict (keys have _orig_mod. prefix)
-        state_dict = checkpoint['model_state_dict']
-        if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
-            state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-        model.load_state_dict(state_dict)
+        load_polymer_ar_checkpoint(model, args.resume, map_location=device)
 
     # Create trainer
     if is_main_process:
@@ -316,6 +291,18 @@ def main(args):
             save_path=figures_dir / 'backbone_loss_curve.png'
         )
 
+        # Export best checkpoint in HF-pretrained format.
+        best_ckpt_path = step_dir / 'checkpoints' / 'backbone_best.pt'
+        hf_export_dir = step_dir / 'checkpoints' / 'backbone_best_hf'
+        if best_ckpt_path.exists():
+            export_model = build_polymer_ar_model(backbone_config, tokenizer, config['diffusion'])
+            load_polymer_ar_checkpoint(export_model, best_ckpt_path, map_location='cpu')
+            export_model.save_pretrained(str(hf_export_dir))
+            tokenizer.save_pretrained(str(hf_export_dir))
+            print(f"HF checkpoint exported to: {hf_export_dir}")
+        else:
+            print(f"Skipping HF export: missing {best_ckpt_path}")
+
         print("\n" + "=" * 50)
         print("Backbone training complete!")
         print(f"Best validation loss: {history['best_val_loss']:.4f}")
@@ -334,6 +321,6 @@ if __name__ == '__main__':
                         choices=['small', 'medium', 'large', 'xl'],
                         help='Model size preset (small: ~12M, medium: ~50M, large: ~150M, xl: ~400M)')
     parser.add_argument('--resume', type=str, default=None,
-                        help='Path to checkpoint to resume from')
+                        help='Path to checkpoint to resume from (.pt or HF model directory)')
     args = parser.parse_args()
     main(args)

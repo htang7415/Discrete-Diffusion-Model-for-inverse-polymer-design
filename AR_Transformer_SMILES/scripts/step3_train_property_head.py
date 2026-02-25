@@ -25,10 +25,14 @@ from optuna.pruners import MedianPruner
 from src.utils.config import load_config, save_config
 from src.utils.plotting import PlotUtils
 from src.utils.model_scales import get_model_config, get_results_dir
-from src.data.tokenizer import PSmilesTokenizer
+from src.data.hf_tokenizer import load_polymer_tokenizer
 from src.data.data_loader import PolymerDataLoader
 from src.data.dataset import PropertyDataset, collate_fn
-from src.model.backbone import DiffusionBackbone
+from src.model.hf_ar import (
+    build_and_load_polymer_ar_model,
+    build_polymer_ar_model,
+    resolve_ar_backbone_path,
+)
 from src.model.property_head import PropertyHead, PropertyPredictor
 from src.training.trainer_property import PropertyTrainer
 from src.utils.reproducibility import seed_everything, save_run_metadata
@@ -180,18 +184,9 @@ def create_objective(backbone_state_dict, train_dataset, val_dataset, config, de
             for i in range(num_layers)
         ]
 
-        # Create fresh backbone for this trial
-        backbone = DiffusionBackbone(
-            vocab_size=tokenizer.vocab_size,
-            hidden_size=backbone_config['hidden_size'],
-            num_layers=backbone_config['num_layers'],
-            num_heads=backbone_config['num_heads'],
-            ffn_hidden_size=backbone_config['ffn_hidden_size'],
-            max_position_embeddings=backbone_config['max_position_embeddings'],
-            num_diffusion_steps=diffusion_config['num_steps'],
-            dropout=backbone_config['dropout'],
-            pad_token_id=tokenizer.pad_token_id
-        )
+        # Create fresh backbone for this trial.
+        model_for_backbone = build_polymer_ar_model(backbone_config, tokenizer, diffusion_config)
+        backbone = model_for_backbone.backbone
         backbone.load_state_dict(backbone_state_dict)
 
         # Create dataloaders with sampled batch_size
@@ -294,10 +289,7 @@ def main(args):
 
     # Load tokenizer (from base results dir which has the tokenizer)
     print("\n1. Loading tokenizer...")
-    tokenizer_path = results_dir / 'tokenizer.json'
-    if not tokenizer_path.exists():
-        tokenizer_path = Path(base_results_dir) / 'tokenizer.json'
-    tokenizer = PSmilesTokenizer.load(tokenizer_path)
+    tokenizer = load_polymer_tokenizer(results_dir, Path(base_results_dir))
 
     # Load property data
     print("\n2. Loading property data...")
@@ -369,35 +361,18 @@ def main(args):
 
     # Load backbone
     print("\n3. Loading backbone...")
-    checkpoint_path = args.backbone_checkpoint or (results_dir / 'step1_backbone' / 'checkpoints' / 'backbone_best.pt')
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint_path = resolve_ar_backbone_path(results_dir, preferred=args.backbone_checkpoint)
 
     # Get backbone config based on model_size
     backbone_config = get_model_config(args.model_size, config, model_type='sequence')
-    backbone = DiffusionBackbone(
-        vocab_size=tokenizer.vocab_size,
-        hidden_size=backbone_config['hidden_size'],
-        num_layers=backbone_config['num_layers'],
-        num_heads=backbone_config['num_heads'],
-        ffn_hidden_size=backbone_config['ffn_hidden_size'],
-        max_position_embeddings=backbone_config['max_position_embeddings'],
-        num_diffusion_steps=config['diffusion']['num_steps'],
-        dropout=backbone_config['dropout'],
-        pad_token_id=tokenizer.pad_token_id
+    backbone_model = build_and_load_polymer_ar_model(
+        backbone_config=backbone_config,
+        tokenizer=tokenizer,
+        diffusion_config=config['diffusion'],
+        checkpoint_path=checkpoint_path,
+        map_location=device,
     )
-
-    # Load backbone weights from autoregressive checkpoint
-    # Handle torch.compile() state dict (keys have _orig_mod. prefix)
-    state_dict = checkpoint['model_state_dict']
-    if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
-        state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
-    if any(k.startswith('backbone.') for k in state_dict.keys()):
-        state_dict = {
-            k.replace('backbone.', ''): v
-            for k, v in state_dict.items()
-            if k.startswith('backbone.')
-        }
-    backbone.load_state_dict(state_dict)
+    backbone = backbone_model.backbone
 
     # Save backbone state dict for hyperparameter tuning
     backbone_state_dict = copy.deepcopy(backbone.state_dict())
@@ -689,7 +664,7 @@ if __name__ == '__main__':
     parser.add_argument('--property', type=str, required=True,
                         help='Property name (e.g., Tg, Tm)')
     parser.add_argument('--backbone_checkpoint', type=str, default=None,
-                        help='Path to backbone checkpoint')
+                        help='Path to backbone checkpoint (.pt or HF model directory)')
     parser.add_argument('--tune', action='store_true',
                         help='Enable hyperparameter tuning with Optuna')
     parser.add_argument('--n_trials', type=int, default=None,

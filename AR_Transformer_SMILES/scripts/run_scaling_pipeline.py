@@ -49,8 +49,10 @@ def run_step(script_name: str, model_size: str, extra_args: str = "") -> tuple:
 
 def check_backbone_checkpoint(results_dir: Path) -> bool:
     """Check if backbone checkpoint exists."""
-    checkpoint_path = results_dir / 'step1_backbone' / 'checkpoints' / 'backbone_best.pt'
-    return checkpoint_path.exists()
+    checkpoint_dir = results_dir / 'step1_backbone' / 'checkpoints'
+    legacy_path = checkpoint_dir / 'backbone_best.pt'
+    hf_dir = checkpoint_dir / 'backbone_best_hf'
+    return legacy_path.exists() or hf_dir.is_dir()
 
 
 def check_property_head_checkpoint(results_dir: Path, property_name: str) -> bool:
@@ -251,11 +253,13 @@ def main():
     if tokenizer_path.exists():
         with open(tokenizer_path, 'r') as f:
             tokenizer_data = json.load(f)
-            # SMILES tokenizer has 'token_to_id' dict
-            if 'token_to_id' in tokenizer_data:
-                vocab_size = len(tokenizer_data['token_to_id'])
-            elif isinstance(tokenizer_data, dict):
-                vocab_size = len(tokenizer_data)
+            if isinstance(tokenizer_data, dict):
+                if 'vocab' in tokenizer_data and isinstance(tokenizer_data['vocab'], dict):
+                    vocab_size = len(tokenizer_data['vocab'])
+                elif 'token_to_id' in tokenizer_data and isinstance(tokenizer_data['token_to_id'], dict):
+                    vocab_size = len(tokenizer_data['token_to_id'])
+                else:
+                    vocab_size = len(tokenizer_data)
     else:
         print(f"Warning: Tokenizer not found at {tokenizer_path}, using default vocab_size=100")
 
