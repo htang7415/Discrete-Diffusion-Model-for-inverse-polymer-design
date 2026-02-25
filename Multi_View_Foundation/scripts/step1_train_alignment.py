@@ -156,23 +156,40 @@ def _plot_f1_embedding_summary(meta_df: pd.DataFrame, figures_dir: Path) -> None
     for bar, val in zip(bars, total_time):
         ax1.text(bar.get_x() + bar.get_width() / 2.0, float(val), f"{float(val):.1f}", ha="center", va="bottom", fontsize=15)
 
-    emb_dim = pd.to_numeric(meta_df["embedding_dim"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
-    ax2.bar(views, emb_dim, color="#B07AA1", alpha=0.9)
-    ax2.set_ylabel("Dimension")
+    # Encoding throughput: (D1 + D2 samples) / total_time_sec
+    total_samples = d1 + d2
+    speed = np.where(total_time > 0, total_samples / total_time, 0.0).astype(np.float32)
+    bars2 = ax2.bar(views, speed, color="#B07AA1", alpha=0.9)
+    ax2.set_ylabel("Throughput (samples/sec)")
     ax2.grid(axis="y", alpha=0.25)
     ax2.tick_params(axis="x", rotation=30)
+    for bar, val in zip(bars2, speed):
+        if val > 0:
+            ax2.text(bar.get_x() + bar.get_width() / 2.0, float(val),
+                     f"{float(val):.0f}", ha="center", va="bottom", fontsize=11)
 
+    # Summary table
     ax3.axis("off")
-    model_sizes = [f"{v}: {m}" for v, m in zip(meta_df["view"].astype(str), meta_df["model_size"].astype(str))]
-    summary_lines = [
-        f"Views: {len(views)}",
-        f"Total D1 samples: {int(np.sum(d1))}",
-        f"Total D2 samples: {int(np.sum(d2))}",
-        f"Total embedding time: {float(np.sum(total_time)):.1f}s",
-        "Model sizes:",
-        *model_sizes,
+    model_sizes_list = meta_df["model_size"].astype(str).tolist()
+    emb_dims = pd.to_numeric(meta_df["embedding_dim"], errors="coerce").fillna(0).astype(int).tolist()
+    table_data = [
+        [v, f"{int(d1_v):,}", f"{int(d2_v):,}", f"{dim}", m]
+        for v, d1_v, d2_v, dim, m in zip(views, d1, d2, emb_dims, model_sizes_list)
     ]
-    ax3.text(0.02, 0.98, "\n".join(summary_lines), va="top", ha="left", fontsize=15, family="monospace")
+    col_labels = ["View", "D1 samples", "D2 samples", "Dim", "Model size"]
+    tbl = ax3.table(
+        cellText=table_data,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(11)
+    tbl.scale(1.0, 1.8)
+    for col_idx in range(len(col_labels)):
+        tbl[(0, col_idx)].set_facecolor("#4E79A7")
+        tbl[(0, col_idx)].set_text_props(color="white", fontweight="bold")
+    ax3.set_title(f"Embedding summary  (total time: {float(np.sum(total_time)):.1f}s)", fontsize=12, pad=4)
 
     fig.tight_layout()
     _save_figure_png(fig, figures_dir / "figure_f1_embedding_summary")

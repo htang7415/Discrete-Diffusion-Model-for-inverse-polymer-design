@@ -2,6 +2,8 @@
 
 Provides a consistent per-step structure:
   <results_dir>/<step_name>/{files,metrics,figures}
+or, for property-scoped artifacts:
+  <results_dir>/<step_name>/<property>/{files,metrics,figures}
 
 Writers can optionally mirror artifacts to legacy locations for backward
 compatibility with existing scripts.
@@ -16,18 +18,35 @@ from typing import Iterable, Optional
 import numpy as np
 
 
-def ensure_step_dirs(results_dir: Path, step_name: str) -> dict:
-    step_dir = Path(results_dir) / step_name
+def _normalize_optional_property_name(property_name: Optional[str]) -> Optional[str]:
+    if property_name is None:
+        return None
+    text = str(property_name).strip()
+    if not text:
+        return None
+    p = Path(text)
+    if p.suffix.lower() == ".csv":
+        text = p.stem
+    text = text.replace("/", "_").replace("\\", "_").strip()
+    return text or None
+
+
+def ensure_step_dirs(results_dir: Path, step_name: str, property_name: Optional[str] = None) -> dict:
+    root_step_dir = Path(results_dir) / step_name
+    property_token = _normalize_optional_property_name(property_name)
+    step_dir = root_step_dir / property_token if property_token else root_step_dir
     files_dir = step_dir / "files"
     metrics_dir = step_dir / "metrics"
     figures_dir = step_dir / "figures"
-    for directory in (step_dir, files_dir, metrics_dir, figures_dir):
+    for directory in (root_step_dir, step_dir, files_dir, metrics_dir, figures_dir):
         directory.mkdir(parents=True, exist_ok=True)
     return {
+        "root_step_dir": root_step_dir,
         "step_dir": step_dir,
         "files_dir": files_dir,
         "metrics_dir": metrics_dir,
         "figures_dir": figures_dir,
+        "property_name": property_token,
     }
 
 
@@ -60,4 +79,3 @@ def save_json(payload, primary_path: Path, legacy_paths: Optional[Iterable[Path]
     for path in _iter_unique_paths(primary_path, legacy_paths):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=indent)
-

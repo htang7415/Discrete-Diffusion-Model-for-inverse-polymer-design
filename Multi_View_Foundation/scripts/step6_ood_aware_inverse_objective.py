@@ -622,6 +622,10 @@ def _candidate_scores_paths_for_property(results_dir: Path, property_name: str) 
     prop = _normalize_property_name(property_name)
     candidates: list[Path] = []
     if prop:
+        candidates.append(results_dir / "step5_foundation_inverse" / prop / "files" / f"candidate_scores_{prop}.csv")
+        candidates.append(results_dir / "step5_foundation_inverse" / prop / "files" / "candidate_scores.csv")
+        candidates.append(results_dir / "step5_foundation_inverse" / prop / f"candidate_scores_{prop}.csv")
+        candidates.append(results_dir / "step5_foundation_inverse" / prop / "candidate_scores.csv")
         candidates.append(results_dir / "step5_foundation_inverse" / "files" / f"candidate_scores_{prop}.csv")
         candidates.append(results_dir / "step5_foundation_inverse" / f"candidate_scores_{prop}.csv")
     candidates.append(results_dir / "step5_foundation_inverse" / "files" / "candidate_scores.csv")
@@ -776,6 +780,8 @@ def main(args):
     property_name = args.property
     if property_name is None:
         property_name = str(cfg_step6.get("property", "")).strip() or str(cfg_f5.get("property", "")).strip() or "property"
+    property_step_dirs = ensure_step_dirs(results_dir, "step6_ood_aware_inverse", property_name)
+    save_config(config, property_step_dirs["files_dir"] / "config_used.yaml")
 
     candidate_scores_path = _resolve_candidate_scores_path(results_dir, property_name)
     if not candidate_scores_path.exists():
@@ -1214,38 +1220,56 @@ def main(args):
 
     save_csv(
         valid_df.sort_values("ood_aware_rank"),
-        step_dirs["files_dir"] / "ood_objective_scores.csv",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / "ood_objective_scores.csv"],
+        property_step_dirs["files_dir"] / "ood_objective_scores.csv",
+        legacy_paths=[
+            step_dirs["files_dir"] / "ood_objective_scores.csv",
+            results_dir / "step6_ood_aware_inverse" / "ood_objective_scores.csv",
+        ],
         index=False,
     )
     save_csv(
         valid_df.sort_values("ood_aware_rank"),
-        step_dirs["files_dir"] / f"ood_objective_scores_{property_name}.csv",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"ood_objective_scores_{property_name}.csv"],
+        property_step_dirs["files_dir"] / f"ood_objective_scores_{property_name}.csv",
+        legacy_paths=[
+            step_dirs["files_dir"] / f"ood_objective_scores_{property_name}.csv",
+            results_dir / "step6_ood_aware_inverse" / f"ood_objective_scores_{property_name}.csv",
+        ],
         index=False,
     )
     save_csv(
         top_df.sort_values("ood_aware_rank"),
-        step_dirs["files_dir"] / "ood_objective_topk.csv",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / "ood_objective_topk.csv"],
+        property_step_dirs["files_dir"] / "ood_objective_topk.csv",
+        legacy_paths=[
+            step_dirs["files_dir"] / "ood_objective_topk.csv",
+            results_dir / "step6_ood_aware_inverse" / "ood_objective_topk.csv",
+        ],
         index=False,
     )
     save_csv(
         top_df.sort_values("ood_aware_rank"),
-        step_dirs["files_dir"] / f"ood_objective_topk_{property_name}.csv",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"ood_objective_topk_{property_name}.csv"],
+        property_step_dirs["files_dir"] / f"ood_objective_topk_{property_name}.csv",
+        legacy_paths=[
+            step_dirs["files_dir"] / f"ood_objective_topk_{property_name}.csv",
+            results_dir / "step6_ood_aware_inverse" / f"ood_objective_topk_{property_name}.csv",
+        ],
         index=False,
     )
     save_csv(
         pd.DataFrame([metrics_row]),
-        step_dirs["metrics_dir"] / "metrics_inverse_ood_objective.csv",
-        legacy_paths=[results_dir / "metrics_inverse_ood_objective.csv"],
+        property_step_dirs["metrics_dir"] / "metrics_inverse_ood_objective.csv",
+        legacy_paths=[
+            step_dirs["metrics_dir"] / "metrics_inverse_ood_objective.csv",
+            results_dir / "metrics_inverse_ood_objective.csv",
+        ],
         index=False,
     )
     save_csv(
         pd.DataFrame([metrics_row]),
-        step_dirs["metrics_dir"] / f"metrics_inverse_ood_objective_{property_name}.csv",
-        legacy_paths=[results_dir / f"metrics_inverse_ood_objective_{property_name}.csv"],
+        property_step_dirs["metrics_dir"] / f"metrics_inverse_ood_objective_{property_name}.csv",
+        legacy_paths=[
+            step_dirs["metrics_dir"] / f"metrics_inverse_ood_objective_{property_name}.csv",
+            results_dir / f"metrics_inverse_ood_objective_{property_name}.csv",
+        ],
         index=False,
     )
     save_json(
@@ -1276,8 +1300,11 @@ def main(args):
             "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
-        step_dirs["files_dir"] / "run_meta.json",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / "run_meta.json"],
+        property_step_dirs["files_dir"] / "run_meta.json",
+        legacy_paths=[
+            step_dirs["files_dir"] / "run_meta.json",
+            results_dir / "step6_ood_aware_inverse" / "run_meta.json",
+        ],
     )
     save_json(
         {
@@ -1307,8 +1334,11 @@ def main(args):
             "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
-        step_dirs["files_dir"] / f"run_meta_{property_name}.json",
-        legacy_paths=[results_dir / "step6_ood_aware_inverse" / f"run_meta_{property_name}.json"],
+        property_step_dirs["files_dir"] / f"run_meta_{property_name}.json",
+        legacy_paths=[
+            step_dirs["files_dir"] / f"run_meta_{property_name}.json",
+            results_dir / "step6_ood_aware_inverse" / f"run_meta_{property_name}.json",
+        ],
     )
 
     _save_augmented_ood_metrics(
@@ -1332,10 +1362,10 @@ def main(args):
             property_name=property_name,
             target_mode=target_mode,
             normalized_term_weights=normalized_term_weights,
-            figures_dir=step_dirs["figures_dir"],
+            figures_dir=property_step_dirs["figures_dir"],
         )
 
-    print(f"Saved metrics_inverse_ood_objective.csv to {results_dir}")
+    print(f"Saved metrics_inverse_ood_objective.csv to {property_step_dirs['step_dir']}")
 
 
 if __name__ == "__main__":

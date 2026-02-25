@@ -8,7 +8,7 @@ import sys
 import importlib.util
 import json
 import copy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -467,24 +467,60 @@ def _draw_heatmap(
     matrix: np.ndarray,
     row_labels: List[str],
     col_labels: List[str],
+    title: str = "",
+    xlabel: str = "Representation",
+    ylabel: str = "Property",
     cmap: str = "viridis",
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     value_fmt: str = ".2f",
+    colorbar_label: str = "",
 ) -> None:
     arr = np.asarray(matrix, dtype=np.float32)
     masked = np.ma.masked_invalid(arr)
-    im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+    finite_vals = arr[np.isfinite(arr)]
+    v0 = vmin if vmin is not None else (float(np.nanmin(finite_vals)) if finite_vals.size else 0.0)
+    v1 = vmax if vmax is not None else (float(np.nanmax(finite_vals)) if finite_vals.size else 1.0)
+    span = (v1 - v0) if v1 != v0 else 1.0
+
+    im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=v0, vmax=v1)
+
     ax.set_yticks(np.arange(len(row_labels)))
-    ax.set_yticklabels(row_labels, fontsize=15)
+    ax.set_yticklabels(row_labels, fontsize=11)
     ax.set_xticks(np.arange(len(col_labels)))
-    ax.set_xticklabels(col_labels, rotation=30, ha="right", fontsize=15)
+    ax.set_xticklabels(col_labels, rotation=40, ha="right", fontsize=11)
+    ax.tick_params(length=0, pad=6)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=11, labelpad=6)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=11, labelpad=6)
+
+    try:
+        cmap_fn = plt.get_cmap(cmap)
+    except Exception:
+        cmap_fn = None
+
     for r in range(arr.shape[0]):
         for c in range(arr.shape[1]):
             val = arr[r, c]
             if np.isfinite(val):
-                ax.text(c, r, format(float(val), value_fmt), ha="center", va="center", fontsize=15, color="black")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                if cmap_fn is not None:
+                    norm_val = (val - v0) / span
+                    rgba = cmap_fn(float(np.clip(norm_val, 0, 1)))
+                    lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
+                    text_color = "white" if lum < 0.45 else "black"
+                else:
+                    text_color = "black"
+                ax.text(c, r, format(float(val), value_fmt), ha="center", va="center", fontsize=10, color=text_color)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.038, pad=0.03, shrink=0.85)
+    cbar.ax.tick_params(labelsize=10, length=0)
+    cbar.outline.set_linewidth(0.5)
+    if colorbar_label:
+        cbar.set_label(colorbar_label, fontsize=11)
 
 
 def _plot_f3_metrics_by_split(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
@@ -581,36 +617,20 @@ def _plot_f3_generalization_heatmaps(metrics_df: pd.DataFrame, figures_dir: Path
             if np.isfinite(train_rmse) and np.isfinite(test_rmse) and abs(float(train_rmse)) > 1e-12:
                 rmse_ratio[p_idx, r_idx] = float(test_rmse / train_rmse)
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, max(4.2, 0.62 * len(properties) + 2.8)))
-    _draw_heatmap(
-        fig=fig,
-        ax=axes[0],
-        matrix=r2_test,
-        row_labels=properties,
-        col_labels=reps,
-        cmap="YlGn",
-        vmin=0.0,
-        vmax=1.0,
-    )
-    _draw_heatmap(
-        fig=fig,
-        ax=axes[1],
-        matrix=r2_gap,
-        row_labels=properties,
-        col_labels=reps,
-        cmap="coolwarm",
-    )
-    _draw_heatmap(
-        fig=fig,
-        ax=axes[2],
-        matrix=rmse_ratio,
-        row_labels=properties,
-        col_labels=reps,
-        cmap="magma",
-        vmin=0.5,
-        vmax=2.0,
-    )
-    fig.tight_layout()
+    panel_h = max(5.0, 0.7 * len(properties) + 2.5)
+    fig, axes = plt.subplots(1, 3, figsize=(21, panel_h), constrained_layout=True)
+
+    panels = [
+        dict(ax=axes[0], matrix=r2_test,    title="Test R²",                              cmap="YlGn",    vmin=0.0, vmax=1.0, colorbar_label="R²"),
+        dict(ax=axes[1], matrix=r2_gap,     title="Generalization Gap\n(Train − Test R²)", cmap="coolwarm",                    colorbar_label="ΔR²"),
+        dict(ax=axes[2], matrix=rmse_ratio, title="RMSE Ratio\n(Test / Train)",            cmap="magma",   vmin=0.5,           colorbar_label="Ratio"),
+    ]
+
+    for label, spec in zip(["(A)", "(B)", "(C)"], panels):
+        _draw_heatmap(fig=fig, row_labels=properties, col_labels=reps, **spec)
+        spec["ax"].text(-0.12, 1.04, label, transform=spec["ax"].transAxes,
+                        fontsize=14, fontweight="bold", va="bottom", ha="left")
+
     _save_figure_png(fig, figures_dir / "figure_f3_generalization_heatmaps")
     plt.close(fig)
 
@@ -766,27 +786,34 @@ def _plot_f3_fusion_gain(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
     props = gain_df["property"].astype(str).tolist()
     x = np.arange(len(props), dtype=np.float32)
 
-    fig, axes = plt.subplots(1, len(metric_specs), figsize=(5.8 * len(metric_specs), max(3.8, 0.8 * len(props) + 2.6)))
+    # For single property, keep figure compact; for many properties scale width
+    panel_w = min(5.8, max(3.2, 1.4 * len(props) + 1.8))
+    panel_h = max(3.8, 0.8 * len(props) + 2.6)
+    fig, axes = plt.subplots(1, len(metric_specs), figsize=(panel_w * len(metric_specs), panel_h))
     if len(metric_specs) == 1:
         axes = [axes]
 
     for ax, (col, label_text) in zip(axes, metric_specs):
         values = pd.to_numeric(gain_df[col], errors="coerce").to_numpy(dtype=np.float32)
         colors = ["#59A14F" if np.isfinite(v) and v >= 0 else "#E15759" for v in values]
-        bars = ax.bar(x, values, color=colors, alpha=0.9)
+        # Use narrower bars when few properties so they don't fill the entire panel
+        bar_width = min(0.55, max(0.3, 0.6 / max(len(props), 1)))
+        bars = ax.bar(x, values, color=colors, alpha=0.9, width=bar_width)
         ax.axhline(0.0, color="#444444", linewidth=1.0)
-        ax.set_xticks(x)
-        ax.set_xticklabels(props, rotation=30, ha="right", fontsize=15)
-        ax.set_ylabel(label_text)
+        ax.set_ylabel(label_text, fontsize=12)
         ax.grid(axis="y", alpha=0.25)
         finite = values[np.isfinite(values)]
         offset = max(0.01, 0.03 * float(np.max(np.abs(finite)))) if finite.size else 0.01
+        # Adjust x-axis limits so narrow bars are not flush with edges
+        ax.set_xlim(-0.8, len(props) - 0.2)
+        ax.set_xticks(x)
+        ax.set_xticklabels(props, rotation=30, ha="right")
         for bar, val in zip(bars, values):
             if not np.isfinite(val):
                 continue
             text_y = float(val) + (offset if val >= 0 else -offset)
             va = "bottom" if val >= 0 else "top"
-            ax.text(bar.get_x() + bar.get_width() / 2.0, text_y, f"{val:+.3f}", ha="center", va=va, fontsize=15)
+            ax.text(bar.get_x() + bar.get_width() / 2.0, text_y, f"{val:+.3f}", ha="center", va=va, fontsize=13)
 
     fig.tight_layout()
     _save_figure_png(fig, figures_dir / "figure_f3_fusion_gain_vs_best_single")
@@ -935,24 +962,65 @@ def _plot_f3_hpo_progress(model_dir: Path, figures_dir: Path) -> None:
         return
 
     properties = sorted(by_property.keys())
-    fig, axes = plt.subplots(len(properties), 1, figsize=(11, max(3.6, 3.2 * len(properties))), squeeze=False)
+    n_props = len(properties)
+    fig, axes = plt.subplots(
+        n_props, 1,
+        figsize=(9, max(4.5, 3.8 * n_props)),
+        squeeze=False,
+        constrained_layout=True,
+    )
     for row_idx, prop in enumerate(properties):
         ax = axes[row_idx, 0]
-        lines = by_property[prop]
-        rep_order = _ordered_representations([item[0] for item in lines])
-        line_map = {item[0]: item for item in lines}
+        lines_data = by_property[prop]
+        rep_order = _ordered_representations([item[0] for item in lines_data])
+        line_map = {item[0]: item for item in lines_data}
         metrics = set()
+
+        endpoints = []
         for rep in rep_order:
             rep_name, x, best_curve, metric_name = line_map[rep]
             metrics.add(metric_name)
-            ax.plot(x, best_curve, label=rep_name, linewidth=1.8)
-        metric_text = ",".join(sorted(metrics)) if metrics else "objective"
-        ax.set_xlabel("Trial")
-        ax.set_ylabel(f"Best {metric_text}")
-        ax.grid(alpha=0.3)
-        ax.legend(loc="best", fontsize=15, ncol=2)
+            color = REPRESENTATION_COLORS.get(rep_name, "#888888")
+            ax.plot(x, best_curve, color=color, linewidth=2.0, label=rep_name)
+            ax.plot(x[-1], best_curve[-1], "o", color=color, markersize=5,
+                    zorder=5, markeredgewidth=0.6, markeredgecolor="white")
+            endpoints.append((float(best_curve[-1]), float(x[-1]), rep_name, color))
 
-    fig.tight_layout()
+        metric_text = ",".join(sorted(metrics)) if metrics else "objective"
+        is_r2 = "r2" in metric_text.lower()
+        ylabel_text = "Best R²" if is_r2 else f"Best {metric_text}"
+
+        # Expand x-axis to make room for end-value labels
+        x_max = max(ep[1] for ep in endpoints) if endpoints else 1.0
+        ax.set_xlim(right=x_max * 1.20)
+
+        # Annotate final best values — nudge vertically to avoid overlap
+        all_y_vals = [ep[0] for ep in endpoints]
+        y_span = (max(all_y_vals) - min(all_y_vals)) if len(all_y_vals) > 1 else 0.1
+        min_gap = max(y_span * 0.06, 0.004)
+        placed_y: List[float] = []
+        for y_val, _x, _name, color in sorted(endpoints, key=lambda e: e[0], reverse=True):
+            y_place = y_val
+            for prev in placed_y:
+                if abs(y_place - prev) < min_gap:
+                    y_place = prev - min_gap
+            placed_y.append(y_place)
+            ax.text(x_max * 1.03, y_place, f"{y_val:.3f}",
+                    color=color, va="center", ha="left")
+
+        ax.set_xlabel("Trial")
+        ax.set_ylabel(ylabel_text)
+        ax.grid(axis="y", alpha=0.2, linestyle="--", color="gray")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.legend(
+            loc="lower right",
+            framealpha=0.9,
+            edgecolor="#cccccc",
+            borderpad=0.6,
+            handlelength=1.5,
+        )
+
     _save_figure_png(fig, figures_dir / "figure_f3_hpo_progress")
     plt.close(fig)
 
@@ -1362,6 +1430,21 @@ def _save_mlp_bundle(model_path: Path, bundle: dict) -> None:
     torch.save(checkpoint, model_path)
 
 
+def _save_mlp_bundle_with_legacy(model_path: Path, bundle: dict, legacy_paths: Optional[Iterable[Path]] = None) -> None:
+    seen = set()
+    candidates = [Path(model_path)]
+    if legacy_paths:
+        candidates.extend(Path(p) for p in legacy_paths)
+
+    for path in candidates:
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _save_mlp_bundle(path, bundle)
+
+
 def _project_embeddings(model: MultiViewModel, view: str, embeddings: np.ndarray, device: str, batch_size: int = 2048) -> np.ndarray:
     if embeddings.size == 0:
         return embeddings
@@ -1407,6 +1490,28 @@ def main(args):
             prop_cfg=prop_cfg,
             args=args,
         )
+        for prop in sorted(metrics_df.get("property", pd.Series(dtype=str)).astype(str).unique().tolist()):
+            if not prop:
+                continue
+            prop_dirs = ensure_step_dirs(results_dir, "step3_property", prop)
+            prop_model_dir = prop_dirs["files_dir"]
+            if not any(prop_model_dir.glob("*_meta.json")):
+                fallback_dir = prop_dirs["step_dir"]
+                if any(fallback_dir.glob("*_meta.json")):
+                    prop_model_dir = fallback_dir
+            if not any(prop_model_dir.glob("*_meta.json")):
+                continue
+            save_config(config, prop_dirs["files_dir"] / "config_used.yaml")
+            prop_metrics = metrics_df[metrics_df["property"].astype(str) == prop].copy()
+            if prop_metrics.empty:
+                continue
+            _generate_f3_figures(
+                metrics_df=prop_metrics,
+                model_dir=prop_model_dir,
+                figures_dir=prop_dirs["figures_dir"],
+                prop_cfg=prop_cfg,
+                args=args,
+            )
         print(f"Saved F3 figures to {step_dirs['figures_dir']}")
         return
 
@@ -1551,9 +1656,14 @@ def main(args):
     view_invalid_cache: Dict[str, set] = {view: set() for view in view_assets}
 
     rows = []
+    rows_by_property: Dict[str, List[dict]] = {}
     for prop_path in property_files:
         df = pd.read_csv(prop_path)
         prop_name = prop_path.stem
+        prop_step_dirs = ensure_step_dirs(results_dir, "step3_property", prop_name)
+        save_config(config, prop_step_dirs["files_dir"] / "config_used.yaml")
+        prop_model_dir = prop_step_dirs["files_dir"]
+        prop_legacy_model_dir = prop_step_dirs["step_dir"]
         smiles_col, value_col = _resolve_property_columns(df, prop_name)
 
         df = df[[smiles_col, value_col]].dropna()
@@ -1699,32 +1809,43 @@ def main(args):
                     preds = _predict_torch_model(model, scaler, embeddings[split_rows], device=device)
                     metrics = _compute_metrics(targets[valid_indices], preds)
                 rep = "Group_SELFIES" if view == "group_selfies" else "Graph" if view == "graph" else view.upper()
-                rows.append({
+                row = {
                     "method": "Multi_View_Foundation",
                     "representation": rep,
                     "model_size": data["model_size"],
                     "property": prop_name,
                     "split": split_name,
                     **metrics,
-                })
+                }
+                rows.append(row)
+                rows_by_property.setdefault(prop_name, []).append(row)
 
-            model_path = model_dir / f"{prop_name}_{view}_mlp.pt"
+            model_path = prop_model_dir / f"{prop_name}_{view}_mlp.pt"
             if view == "smiles":
-                model_path = model_dir / f"{prop_name}_mlp.pt"
-            _save_mlp_bundle(model_path, model_bundle)
-            legacy_model_path = legacy_model_dir / model_path.name
-            if legacy_model_path != model_path:
-                _save_mlp_bundle(legacy_model_path, model_bundle)
+                model_path = prop_model_dir / f"{prop_name}_mlp.pt"
+            _save_mlp_bundle_with_legacy(
+                model_path,
+                model_bundle,
+                legacy_paths=[
+                    model_dir / model_path.name,
+                    prop_legacy_model_dir / model_path.name,
+                    legacy_model_dir / model_path.name,
+                ],
+            )
 
-            trial_path = model_dir / f"{prop_name}_{view}_mlp_hpo_trials.csv"
+            trial_path = prop_model_dir / f"{prop_name}_{view}_mlp_hpo_trials.csv"
             save_csv(
                 trial_df,
                 trial_path,
-                legacy_paths=[legacy_model_dir / trial_path.name],
+                legacy_paths=[
+                    model_dir / trial_path.name,
+                    prop_legacy_model_dir / trial_path.name,
+                    legacy_model_dir / trial_path.name,
+                ],
                 index=False,
             )
 
-            meta_path = model_dir / f"{prop_name}_{view}_meta.json"
+            meta_path = prop_model_dir / f"{prop_name}_{view}_meta.json"
             save_json(
                 {
                     "property": prop_name,
@@ -1741,7 +1862,11 @@ def main(args):
                     "hpo_trials_path": str(trial_path),
                 },
                 meta_path,
-                legacy_paths=[legacy_model_dir / meta_path.name],
+                legacy_paths=[
+                    model_dir / meta_path.name,
+                    prop_legacy_model_dir / meta_path.name,
+                    legacy_model_dir / meta_path.name,
+                ],
             )
 
         if len(view_data) >= 2:
@@ -1784,30 +1909,41 @@ def main(args):
                         else:
                             preds = _predict_torch_model(model, scaler, fused[split_rows], device=device)
                             metrics = _compute_metrics(targets[valid_indices], preds)
-                        rows.append({
+                        row = {
                             "method": "Multi_View_Foundation",
                             "representation": "MultiViewMean",
                             "model_size": "mixed",
                             "property": prop_name,
                             "split": split_name,
                             **metrics,
-                        })
+                        }
+                        rows.append(row)
+                        rows_by_property.setdefault(prop_name, []).append(row)
 
-                    model_path = model_dir / f"{prop_name}_multiview_mean_mlp.pt"
-                    _save_mlp_bundle(model_path, model_bundle)
-                    legacy_model_path = legacy_model_dir / model_path.name
-                    if legacy_model_path != model_path:
-                        _save_mlp_bundle(legacy_model_path, model_bundle)
+                    model_path = prop_model_dir / f"{prop_name}_multiview_mean_mlp.pt"
+                    _save_mlp_bundle_with_legacy(
+                        model_path,
+                        model_bundle,
+                        legacy_paths=[
+                            model_dir / model_path.name,
+                            prop_legacy_model_dir / model_path.name,
+                            legacy_model_dir / model_path.name,
+                        ],
+                    )
 
-                    trial_path = model_dir / f"{prop_name}_multiview_mean_mlp_hpo_trials.csv"
+                    trial_path = prop_model_dir / f"{prop_name}_multiview_mean_mlp_hpo_trials.csv"
                     save_csv(
                         trial_df,
                         trial_path,
-                        legacy_paths=[legacy_model_dir / trial_path.name],
+                        legacy_paths=[
+                            model_dir / trial_path.name,
+                            prop_legacy_model_dir / trial_path.name,
+                            legacy_model_dir / trial_path.name,
+                        ],
                         index=False,
                     )
 
-                    meta_path = model_dir / f"{prop_name}_multiview_mean_meta.json"
+                    meta_path = prop_model_dir / f"{prop_name}_multiview_mean_meta.json"
                     save_json(
                         {
                             "property": prop_name,
@@ -1825,8 +1961,29 @@ def main(args):
                             "hpo_trials_path": str(trial_path),
                         },
                         meta_path,
-                        legacy_paths=[legacy_model_dir / meta_path.name],
+                        legacy_paths=[
+                            model_dir / meta_path.name,
+                            prop_legacy_model_dir / meta_path.name,
+                            legacy_model_dir / meta_path.name,
+                        ],
                     )
+
+        prop_metrics_rows = rows_by_property.get(prop_name, [])
+        if prop_metrics_rows:
+            prop_metrics_df = pd.DataFrame(prop_metrics_rows)
+            save_csv(
+                prop_metrics_df,
+                prop_step_dirs["metrics_dir"] / "metrics_property.csv",
+                legacy_paths=[prop_step_dirs["step_dir"] / "metrics_property.csv"],
+                index=False,
+            )
+            _generate_f3_figures(
+                metrics_df=prop_metrics_df,
+                model_dir=prop_model_dir,
+                figures_dir=prop_step_dirs["figures_dir"],
+                prop_cfg=prop_cfg,
+                args=args,
+            )
 
     metrics_df = pd.DataFrame(rows)
     save_csv(

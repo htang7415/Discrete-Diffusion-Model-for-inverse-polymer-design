@@ -98,15 +98,19 @@ def _draw_heatmap(fig, ax, matrix: np.ndarray, row_labels, col_labels, vmin=0.0,
     arr = np.asarray(matrix, dtype=np.float32)
     masked = np.ma.masked_invalid(arr)
     im = ax.imshow(masked, cmap="YlGnBu", vmin=vmin, vmax=vmax, aspect="auto")
+    n_rows, n_cols = arr.shape[0], arr.shape[1]
+    # Scale tick/cell fontsize to matrix size so text fits in cells
+    cell_fs = max(7, min(11, 80 // max(n_rows, n_cols, 1)))
     ax.set_yticks(np.arange(len(row_labels)))
-    ax.set_yticklabels(row_labels, fontsize=15)
+    ax.set_yticklabels(row_labels, fontsize=cell_fs + 1)
     ax.set_xticks(np.arange(len(col_labels)))
-    ax.set_xticklabels(col_labels, rotation=30, ha="right", fontsize=15)
+    ax.set_xticklabels(col_labels, rotation=35, ha="right", fontsize=cell_fs + 1)
     for r in range(arr.shape[0]):
         for c in range(arr.shape[1]):
             val = arr[r, c]
             if np.isfinite(val):
-                ax.text(c, r, f"{float(val):.3f}", ha="center", va="center", fontsize=15, color="black")
+                text_color = "white" if float(val) > 0.65 * (vmax - vmin) + vmin else "black"
+                ax.text(c, r, f"{float(val):.2f}", ha="center", va="center", fontsize=cell_fs, color=text_color)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 
@@ -145,10 +149,14 @@ def _plot_f2_retrieval_heatmaps(metrics_df: pd.DataFrame, figures_dir: Path) -> 
     recall_cols = sorted(recall_cols, key=lambda x: int(str(x).split("_")[-1]) if str(x).split("_")[-1].isdigit() else 0)
     metric_cols = recall_cols + ["match_rate"]
 
+    # Scale panel size so 5×5 cell text remains legible
+    n_views = len(views)
+    panel_w = max(5.5, 1.1 * n_views)
+    panel_h = max(4.5, 1.0 * n_views)
     fig, axes = plt.subplots(
         len(datasets),
         len(metric_cols),
-        figsize=(4.4 * len(metric_cols), max(3.6, 3.2 * len(datasets))),
+        figsize=(panel_w * len(metric_cols), panel_h * len(datasets)),
         squeeze=False,
     )
 

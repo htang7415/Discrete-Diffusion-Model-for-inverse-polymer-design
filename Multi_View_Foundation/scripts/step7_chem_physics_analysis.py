@@ -353,6 +353,10 @@ def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
 
 def _default_candidate_paths(results_dir: Path, property_name: str) -> List[Path]:
     return [
+        results_dir / "step5_foundation_inverse" / property_name / "files" / f"candidate_scores_{property_name}.csv",
+        results_dir / "step5_foundation_inverse" / property_name / "files" / "candidate_scores.csv",
+        results_dir / "step5_foundation_inverse" / property_name / f"candidate_scores_{property_name}.csv",
+        results_dir / "step5_foundation_inverse" / property_name / "candidate_scores.csv",
         results_dir / "step5_foundation_inverse" / "files" / f"candidate_scores_{property_name}.csv",
         results_dir / "step5_foundation_inverse" / "files" / f"{property_name}_candidate_scores.csv",
         results_dir / "step5_foundation_inverse" / "files" / "candidate_scores.csv",
@@ -363,6 +367,10 @@ def _default_candidate_paths(results_dir: Path, property_name: str) -> List[Path
 
 def _default_topk_paths(results_dir: Path, property_name: str) -> List[Path]:
     return [
+        results_dir / "step6_ood_aware_inverse" / property_name / "files" / f"ood_objective_topk_{property_name}.csv",
+        results_dir / "step6_ood_aware_inverse" / property_name / "files" / "ood_objective_topk.csv",
+        results_dir / "step6_ood_aware_inverse" / property_name / f"ood_objective_topk_{property_name}.csv",
+        results_dir / "step6_ood_aware_inverse" / property_name / "ood_objective_topk.csv",
         results_dir / "step6_ood_aware_inverse" / "files" / f"ood_objective_topk_{property_name}.csv",
         results_dir / "step6_ood_aware_inverse" / "files" / f"{property_name}_ood_objective_topk.csv",
         results_dir / "step6_ood_aware_inverse" / "files" / "ood_objective_topk.csv",
@@ -982,7 +990,7 @@ def _plot_property_ood_landscape_figure(
     use_target_excess = str(target_mode).strip().lower() in {"ge", "le"} and cdf["target_excess"].notna().any()
     y_col = "target_excess" if use_target_excess else "property_error"
     y_label = (
-        f"{_target_excess_axis_label(property_name, target_mode)} (>=0 is hit)"
+        f"Target excess (≥0 = hit)"
         if use_target_excess
         else "Property error"
     )
@@ -1047,7 +1055,7 @@ def _plot_nearest_neighbor_detail_figure(property_name: str, nn_df: pd.DataFrame
         return
 
     with plt.rc_context(PUBLICATION_STYLE):
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5.5))
         ax0, ax1, ax2 = axes
 
         ax0.hist(sims, bins=18, color="#6D597A", alpha=0.85)
@@ -1071,26 +1079,56 @@ def _plot_nearest_neighbor_detail_figure(property_name: str, nn_df: pd.DataFrame
             ax1.text(0.5, 0.5, "No paired values", ha="center", va="center")
             ax1.set_axis_off()
 
-        delta_cols = [
+        # Show structural/count descriptors only (comparable scales);
+        # large-magnitude descriptors (mol_wt, tpsa, logp) displayed as text annotations.
+        bar_cols = [
             ("delta_aromatic_ring_count", "Δ aromatic rings"),
+            ("delta_ring_count", "Δ ring count"),
             ("delta_rotatable_bonds", "Δ rotatable bonds"),
-            ("delta_mol_wt", "Δ mol wt"),
+            ("delta_fraction_csp3", "Δ frac CSP3"),
         ]
-        labels = []
-        vals = []
-        for col, label in delta_cols:
+        note_cols = [
+            ("delta_mol_wt", "Δ mol wt"),
+            ("delta_tpsa", "Δ TPSA"),
+            ("delta_logp", "Δ logP"),
+        ]
+        labels, vals = [], []
+        for col, label in bar_cols:
             if col in ndf.columns:
                 arr = _numeric_array(ndf[col])
                 if arr.size:
                     labels.append(label)
                     vals.append(float(np.mean(arr)))
+        note_lines = []
+        for col, label in note_cols:
+            if col in ndf.columns:
+                arr = _numeric_array(ndf[col])
+                if arr.size:
+                    note_lines.append(f"{label}: {float(np.mean(arr)):+.2f}")
         if vals:
             colors = [COLOR_ACCENT if v >= 0 else COLOR_SECONDARY for v in vals]
-            ax2.bar(labels, vals, color=colors, alpha=0.9)
-            ax2.axhline(0.0, color="#111111", linewidth=1.0)
-            ax2.set_ylabel("Delta")
-            ax2.grid(axis="y", alpha=0.25)
-            ax2.tick_params(axis="x", rotation=20)
+            y_pos = np.arange(len(labels), dtype=np.float32)
+            ax2.barh(y_pos, vals, color=colors, alpha=0.85)
+            ax2.axvline(0.0, color="#111111", linewidth=1.0)
+            # No y-ticks — embed label + value as white text inside each bar
+            ax2.set_yticks([])
+            ax2.set_xlabel("Mean Δ (top-k vs nearest reference)", fontsize=9)
+            ax2.set_title("Descriptor shifts\n(top-k vs nearest ref)", fontsize=10)
+            ax2.grid(axis="x", alpha=0.25)
+            x_range = max(abs(v) for v in vals) if vals else 1.0
+            for y_pos_i, v, label in zip(y_pos, vals, labels):
+                # Embed combined "label: value" just inside the zero end of the bar
+                inner_x = -0.03 * x_range if v < 0 else 0.03 * x_range
+                ha_inner = "right" if v < 0 else "left"
+                ax2.text(inner_x, y_pos_i, f"{label}: {v:+.2f}",
+                         va="center", ha=ha_inner, fontsize=8,
+                         color="white", fontweight="bold")
+            # Show large-magnitude descriptors as a text block below the plot
+            if note_lines:
+                note_text = "  ".join(note_lines)
+                ax2.text(0.5, -0.18, note_text, transform=ax2.transAxes,
+                         ha="center", va="top", fontsize=8, color="#555555",
+                         style="italic")
         else:
             ax2.text(0.5, 0.5, "No descriptor delta columns", ha="center", va="center")
             ax2.set_axis_off()
@@ -1339,6 +1377,8 @@ def main(args):
     multi_property_run = len(properties) > 1
 
     for prop in properties:
+        prop_step_dirs = ensure_step_dirs(results_dir, "step7_chem_physics_analysis", prop)
+        save_config(config, prop_step_dirs["files_dir"] / "config_used.yaml")
         try:
             ref_df = _load_property_reference(property_dir, prop, max_samples=max_ref_samples)
         except Exception as exc:
@@ -1360,6 +1400,19 @@ def main(args):
                 "candidate_scores_path": str(cand_path) if cand_path else "",
                 "topk_scores_path": str(topk_path) if topk_path else "",
             }
+        )
+        save_csv(
+            pd.DataFrame(
+                [
+                    {
+                        "property": prop,
+                        "candidate_scores_path": str(cand_path) if cand_path else "",
+                        "topk_scores_path": str(topk_path) if topk_path else "",
+                    }
+                ]
+            ),
+            prop_step_dirs["files_dir"] / "property_input_files.csv",
+            index=False,
         )
 
         if topk_path is None:
@@ -1500,6 +1553,11 @@ def main(args):
         if not nn_df.empty:
             all_nn.append(nn_df)
 
+        save_csv(shift_df, prop_step_dirs["files_dir"] / "descriptor_shifts.csv", index=False)
+        save_csv(motif_df, prop_step_dirs["files_dir"] / "motif_enrichment.csv", index=False)
+        save_csv(physics_df, prop_step_dirs["files_dir"] / "physics_consistency.csv", index=False)
+        save_csv(nn_df, prop_step_dirs["files_dir"] / "nearest_neighbor_explanations.csv", index=False)
+
         if "property_hit" in topk_df.columns:
             hit_vals = pd.to_numeric(topk_df["property_hit"], errors="coerce")
             topk_hit_rate = float(np.nanmean(hit_vals)) if hit_vals.notna().any() else np.nan
@@ -1530,27 +1588,27 @@ def main(args):
         else:
             mean_obj = float(pd.to_numeric(topk_df.get("ood_aware_objective", pd.Series(dtype=float)), errors="coerce").mean()) if "ood_aware_objective" in topk_df.columns else np.nan
         mean_constraint = float(pd.to_numeric(topk_df.get("constraint_violation_total", pd.Series(dtype=float)), errors="coerce").mean()) if "constraint_violation_total" in topk_df.columns else np.nan
-        metric_rows.append(
-            {
-                "method": "Multi_View_Foundation",
-                "property": prop,
-                "n_reference": int(len(ref_df_used)),
-                "n_candidates": int(len(candidate_df)),
-                "n_topk": int(len(topk_df)),
-                "reference_class_filter_enabled": bool(reference_class_filter_enabled and bool(resolved_reference_class)),
-                "reference_class_filter": resolved_reference_class if resolved_reference_class else "",
-                "descriptor_consistency_rate": round(consistency_rate, 4) if np.isfinite(consistency_rate) else np.nan,
-                "mean_nn_similarity": round(mean_nn, 4) if np.isfinite(mean_nn) else np.nan,
-                "topk_hit_rate": round(topk_hit_rate, 4) if np.isfinite(topk_hit_rate) else np.nan,
-                "topk_mean_d2_distance": round(mean_d2, 6) if np.isfinite(mean_d2) else np.nan,
-                "topk_mean_prediction_uncertainty": round(mean_unc, 6) if np.isfinite(mean_unc) else np.nan,
-                "topk_mean_conservative_objective": round(mean_obj, 6) if np.isfinite(mean_obj) else np.nan,
-                "topk_mean_constraint_violation": round(mean_constraint, 6) if np.isfinite(mean_constraint) else np.nan,
-                "target_value": target,
-                "target_mode": target_mode,
-                "epsilon": epsilon,
-            }
-        )
+        metric_row = {
+            "method": "Multi_View_Foundation",
+            "property": prop,
+            "n_reference": int(len(ref_df_used)),
+            "n_candidates": int(len(candidate_df)),
+            "n_topk": int(len(topk_df)),
+            "reference_class_filter_enabled": bool(reference_class_filter_enabled and bool(resolved_reference_class)),
+            "reference_class_filter": resolved_reference_class if resolved_reference_class else "",
+            "descriptor_consistency_rate": round(consistency_rate, 4) if np.isfinite(consistency_rate) else np.nan,
+            "mean_nn_similarity": round(mean_nn, 4) if np.isfinite(mean_nn) else np.nan,
+            "topk_hit_rate": round(topk_hit_rate, 4) if np.isfinite(topk_hit_rate) else np.nan,
+            "topk_mean_d2_distance": round(mean_d2, 6) if np.isfinite(mean_d2) else np.nan,
+            "topk_mean_prediction_uncertainty": round(mean_unc, 6) if np.isfinite(mean_unc) else np.nan,
+            "topk_mean_conservative_objective": round(mean_obj, 6) if np.isfinite(mean_obj) else np.nan,
+            "topk_mean_constraint_violation": round(mean_constraint, 6) if np.isfinite(mean_constraint) else np.nan,
+            "target_value": target,
+            "target_mode": target_mode,
+            "epsilon": epsilon,
+        }
+        metric_rows.append(metric_row)
+        save_csv(pd.DataFrame([metric_row]), prop_step_dirs["metrics_dir"] / "metrics_chem_physics.csv", index=False)
 
         if generate_figures:
             _plot_property_figure_suite(
@@ -1563,8 +1621,23 @@ def main(args):
                 nn_df=nn_df,
                 target=target,
                 target_mode=target_mode,
-                figures_dir=step_dirs["figures_dir"],
+                figures_dir=prop_step_dirs["figures_dir"],
             )
+
+        save_json(
+            {
+                "property": prop,
+                "candidate_scores_path": str(cand_path) if cand_path else "",
+                "topk_scores_path": str(topk_path) if topk_path else "",
+                "reference_class_filter_enabled": bool(reference_class_filter_enabled),
+                "reference_class_filter": resolved_reference_class if resolved_reference_class else "",
+                "target_value": target,
+                "target_mode": target_mode,
+                "epsilon": epsilon,
+                "generate_figures": bool(generate_figures),
+            },
+            prop_step_dirs["files_dir"] / "run_meta.json",
+        )
 
     if not metric_rows:
         raise RuntimeError(

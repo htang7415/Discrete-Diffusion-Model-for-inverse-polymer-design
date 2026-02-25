@@ -99,12 +99,11 @@ def _plot_f4_ood_diagnostics(
     ax0.legend(loc="best", fontsize=15)
 
     summary_keys = [
-        ("d1_to_d2_mean_dist", "D1->D2 mean"),
-        ("generated_to_d2_mean_dist", "Gen->D2 mean"),
+        ("d1_to_d2_mean_dist", "D1→D2 mean dist"),
+        ("generated_to_d2_mean_dist", "Gen→D2 mean dist"),
         ("frac_generated_near_d2", "Frac gen near D2"),
     ]
-    labels = []
-    values = []
+    stat_lines = []
     for key, label in summary_keys:
         val = metrics_row.get(key)
         if val is None:
@@ -114,19 +113,33 @@ def _plot_f4_ood_diagnostics(
         except Exception:
             continue
         if np.isfinite(val):
-            labels.append(label)
-            values.append(val)
-    if labels:
-        y = np.arange(len(labels), dtype=np.float32)
-        bars = ax1.barh(y, np.asarray(values, dtype=np.float32), color=["#59A14F", "#F28E2B", "#B07AA1"][: len(labels)])
-        ax1.set_yticks(y)
-        ax1.set_yticklabels(labels, fontsize=15)
-        ax1.grid(axis="x", alpha=0.25)
-        for bar, val in zip(bars, values):
-            ax1.text(float(val), bar.get_y() + bar.get_height() / 2.0, f"  {val:.4f}", va="center", ha="left", fontsize=15)
+            fmt = f"{val:.4f}" if key.startswith("frac") else f"{val:.3f}"
+            stat_lines.append((label, fmt))
+    # Also add D1 count and Gen count for context
+    if d1_vals.size:
+        stat_lines.append(("D1 samples", f"{d1_vals.size:,}"))
+    if gen_vals is not None:
+        stat_lines.append(("Gen samples", f"{gen_vals.size:,}"))
+    ax1.set_axis_off()
+    if stat_lines:
+        col_labels = ["Metric", "Value"]
+        table_data = [[lbl, val] for lbl, val in stat_lines]
+        tbl = ax1.table(
+            cellText=table_data,
+            colLabels=col_labels,
+            loc="center",
+            cellLoc="left",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(13)
+        tbl.scale(1.0, 2.0)
+        # Style header row
+        for col_idx in range(len(col_labels)):
+            tbl[(0, col_idx)].set_facecolor("#4E79A7")
+            tbl[(0, col_idx)].set_text_props(color="white", fontweight="bold")
+        ax1.set_title("OOD Summary Statistics", fontsize=13, pad=4)
     else:
-        ax1.text(0.5, 0.5, "No finite summary metrics", ha="center", va="center")
-        ax1.set_axis_off()
+        ax1.text(0.5, 0.5, "No finite summary metrics", ha="center", va="center", fontsize=13)
 
     fig.tight_layout()
     _save_figure_png(fig, figures_dir / "figure_f4_ood_diagnostics")

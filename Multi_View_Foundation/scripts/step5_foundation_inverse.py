@@ -276,7 +276,7 @@ def _plot_f5_diagnostics(
                     )
                     ax1.axhline(0.0, color="#222222", linestyle="--", linewidth=1.0)
                     ax1.set_xlabel("D2 distance")
-                    ax1.set_ylabel(f"{_target_excess_axis_label(property_name, mode)} (>=0 is hit)")
+                    ax1.set_ylabel("Target excess (≥0 = hit)")
                     ax1.grid(alpha=0.25)
                     fig.colorbar(sc, ax=ax1, fraction=0.046, pad=0.04, label="Target excess")
                 else:
@@ -302,27 +302,49 @@ def _plot_f5_diagnostics(
         ax1.text(0.5, 0.5, "No d2_distance column", ha="center", va="center")
         ax1.set_axis_off()
 
-    # C) accepted per proposal view.
+    # C) Sampling funnel: generated → structural valid → scored → accepted (property hit).
+    # If multiple views, show per-view breakdown; otherwise show aggregate funnel.
+    stats_dict = source_meta.get("stats", {})
+    funnel_drawn = False
     if "proposal_view" in df.columns:
-        grp = (
-            df.loc[accepted_mask]
-            .groupby("proposal_view")
-            .size()
-            .sort_values(ascending=False)
-        )
-        if not grp.empty:
-            bars = ax2.bar(grp.index.astype(str).tolist(), grp.to_numpy(dtype=np.float32), color="#59A14F", alpha=0.85)
-            ax2.set_ylabel("Accepted count")
+        all_proposal_views = sorted(df["proposal_view"].dropna().astype(str).unique().tolist())
+        if len(all_proposal_views) > 1:
+            # Multi-view: grouped bar showing generated / scored / accepted per view
+            x_labels = all_proposal_views
+            n_gen = np.array([float(stats_dict.get(f"n_generated_{v}", 0)) for v in all_proposal_views], dtype=np.float32)
+            n_scored = np.array([float(stats_dict.get(f"n_scored_{v}", 0)) for v in all_proposal_views], dtype=np.float32)
+            n_accepted = np.array([float(df.loc[accepted_mask & (df["proposal_view"] == v)].shape[0]) for v in all_proposal_views], dtype=np.float32)
+            x = np.arange(len(x_labels), dtype=np.float32)
+            w = 0.28
+            ax2.bar(x - w, n_gen, width=w, label="Generated", color="#AEC7E8", alpha=0.85)
+            ax2.bar(x, n_scored, width=w, label="Scored", color="#4E79A7", alpha=0.85)
+            ax2.bar(x + w, n_accepted, width=w, label="Accepted", color="#59A14F", alpha=0.85)
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(x_labels, rotation=30, ha="right", fontsize=12)
+            ax2.set_ylabel("Count")
+            ax2.legend(loc="best", fontsize=11)
             ax2.grid(axis="y", alpha=0.25)
-            ax2.tick_params(axis="x", rotation=30)
-            for bar, val in zip(bars, grp.to_numpy(dtype=np.float32)):
-                ax2.text(bar.get_x() + bar.get_width() / 2.0, float(val), f"{int(val)}", ha="center", va="bottom", fontsize=15)
-        else:
-            ax2.text(0.5, 0.5, "No accepted candidates", ha="center", va="center")
-            ax2.set_axis_off()
-    else:
-        ax2.text(0.5, 0.5, "No proposal_view column", ha="center", va="center")
-        ax2.set_axis_off()
+            funnel_drawn = True
+    if not funnel_drawn:
+        # Single/no view: show aggregate funnel as horizontal bar chart
+        n_gen_total = float(stats_dict.get("n_generated", len(df)))
+        n_valid = float(stats_dict.get("n_structural_valid", stats_dict.get("n_valid_any", 0)))
+        n_scored_total = float(stats_dict.get("n_scored", len(df)))
+        n_accepted_total = int(np.sum(accepted_mask))
+        funnel_labels = ["Generated", "Struct. valid", "Scored", "Accepted"]
+        funnel_vals = np.array([n_gen_total, n_valid, n_scored_total, float(n_accepted_total)], dtype=np.float32)
+        colors = ["#AEC7E8", "#6BAED6", "#4E79A7", "#59A14F"]
+        y_pos = np.arange(len(funnel_labels), dtype=np.float32)
+        bars = ax2.barh(y_pos, funnel_vals, color=colors, alpha=0.9)
+        ax2.set_yticks(y_pos)
+        ax2.set_yticklabels(funnel_labels, fontsize=12)
+        ax2.set_xlabel("Count")
+        ax2.set_title("Sampling funnel", fontsize=12)
+        ax2.grid(axis="x", alpha=0.25)
+        for bar, val in zip(bars, funnel_vals):
+            if val > 0:
+                ax2.text(float(val), bar.get_y() + bar.get_height() / 2.0,
+                         f"  {int(val):,}", va="center", ha="left", fontsize=11)
 
     # D) cumulative hits by ranking.
     hit_col = df.get("property_hit", pd.Series([False] * len(df))).astype(bool).to_numpy(dtype=bool)
@@ -967,7 +989,12 @@ def _load_d2_embeddings(results_dir: Path, view: str) -> np.ndarray:
 
 
 def _default_property_model_path(results_dir: Path, property_name: str, view: str) -> Path:
+    prop = _normalize_property_name(property_name)
     model_dir = results_dir / "step3_property"
+    if prop:
+        model_dir = model_dir / prop / "files"
+    else:
+        model_dir = model_dir / "files"
     if view == "smiles":
         return model_dir / f"{property_name}_mlp.pt"
     return model_dir / f"{property_name}_{view}_mlp.pt"
@@ -976,6 +1003,9 @@ def _default_property_model_path(results_dir: Path, property_name: str, view: st
 def _discover_property_model_paths(results_dir: Path, property_name: str) -> Dict[str, Path]:
     model_dir = results_dir / "step3_property"
     files_dir = model_dir / "files"
+    prop = _normalize_property_name(property_name)
+    prop_files_dir = model_dir / prop / "files" if prop else None
+    prop_step_dir = model_dir / prop if prop else None
     discovered: Dict[str, Path] = {}
 
     for view in SUPPORTED_VIEWS:
@@ -983,13 +1013,23 @@ def _discover_property_model_paths(results_dir: Path, property_name: str) -> Dic
             filename = f"{property_name}_mlp.pt"
         else:
             filename = f"{property_name}_{view}_mlp.pt"
-        candidates = [files_dir / filename, model_dir / filename]
+        candidates = []
+        if prop_files_dir is not None:
+            candidates.append(prop_files_dir / filename)
+        if prop_step_dir is not None:
+            candidates.append(prop_step_dir / filename)
+        candidates.extend([files_dir / filename, model_dir / filename])
         model_path = next((p for p in candidates if p.exists()), None)
         if model_path is not None:
             discovered[view] = model_path
 
     mv_filename = f"{property_name}_multiview_mean_mlp.pt"
-    mv_candidates = [files_dir / mv_filename, model_dir / mv_filename]
+    mv_candidates = []
+    if prop_files_dir is not None:
+        mv_candidates.append(prop_files_dir / mv_filename)
+    if prop_step_dir is not None:
+        mv_candidates.append(prop_step_dir / mv_filename)
+    mv_candidates.extend([files_dir / mv_filename, model_dir / mv_filename])
     mv_path = next((p for p in mv_candidates if p.exists()), None)
     if mv_path is not None:
         discovered["multiview_mean"] = mv_path
@@ -2038,8 +2078,10 @@ def main(args):
     results_dir = _resolve_path(config["paths"]["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
     step_dirs = ensure_step_dirs(results_dir, "step5_foundation_inverse")
+    property_step_dirs = ensure_step_dirs(results_dir, "step5_foundation_inverse", args.property)
     save_config(config, results_dir / "config_used.yaml")
     save_config(config, step_dirs["files_dir"] / "config_used.yaml")
+    save_config(config, property_step_dirs["files_dir"] / "config_used.yaml")
 
     encoder_view = _select_encoder_view(config, args.encoder_view)
     proposal_views = _select_proposal_views(config, args.proposal_views, fallback_view=encoder_view)
@@ -2072,7 +2114,12 @@ def main(args):
         model_path = _resolve_path(model_path)
 
     if not Path(model_path).exists():
-        raise FileNotFoundError(f"Property model not found: {model_path}")
+        discovered = _discover_property_model_paths(results_dir, args.property)
+        fallback = discovered.get(encoder_view) or discovered.get("smiles")
+        if fallback is not None and Path(fallback).exists():
+            model_path = fallback
+        else:
+            raise FileNotFoundError(f"Property model not found: {model_path}")
 
     model = _load_property_model(Path(model_path))
     target_value = float(args.target)
@@ -2337,13 +2384,17 @@ def main(args):
 
     save_csv(
         pd.DataFrame([metrics_row]),
-        step_dirs["metrics_dir"] / "metrics_inverse.csv",
-        legacy_paths=[results_dir / "metrics_inverse.csv"],
+        property_step_dirs["metrics_dir"] / "metrics_inverse.csv",
+        legacy_paths=[
+            step_dirs["metrics_dir"] / "metrics_inverse.csv",
+            results_dir / "metrics_inverse.csv",
+        ],
         index=False,
     )
 
     out_dir = step_dirs["step_dir"]
-    files_dir = step_dirs["files_dir"]
+    files_dir = property_step_dirs["files_dir"]
+    legacy_files_dir = step_dirs["files_dir"]
 
     if d2_distance_scores is not None and len(scored_df) == len(d2_distance_scores):
         scored_df = scored_df.copy()
@@ -2360,25 +2411,37 @@ def main(args):
     save_csv(
         scored_df,
         files_dir / "candidate_scores.csv",
-        legacy_paths=[out_dir / "candidate_scores.csv"],
+        legacy_paths=[
+            legacy_files_dir / "candidate_scores.csv",
+            out_dir / "candidate_scores.csv",
+        ],
         index=False,
     )
     save_csv(
         scored_df,
         files_dir / f"candidate_scores_{args.property}.csv",
-        legacy_paths=[out_dir / f"candidate_scores_{args.property}.csv"],
+        legacy_paths=[
+            legacy_files_dir / f"candidate_scores_{args.property}.csv",
+            out_dir / f"candidate_scores_{args.property}.csv",
+        ],
         index=False,
     )
     save_csv(
         accepted_df,
         files_dir / "accepted_candidates.csv",
-        legacy_paths=[out_dir / "accepted_candidates.csv"],
+        legacy_paths=[
+            legacy_files_dir / "accepted_candidates.csv",
+            out_dir / "accepted_candidates.csv",
+        ],
         index=False,
     )
     save_csv(
         accepted_df,
         files_dir / f"accepted_candidates_{args.property}.csv",
-        legacy_paths=[out_dir / f"accepted_candidates_{args.property}.csv"],
+        legacy_paths=[
+            legacy_files_dir / f"accepted_candidates_{args.property}.csv",
+            out_dir / f"accepted_candidates_{args.property}.csv",
+        ],
         index=False,
     )
 
@@ -2399,7 +2462,10 @@ def main(args):
             "n_hits": int(n_hits),
         },
         files_dir / "run_meta.json",
-        legacy_paths=[out_dir / "run_meta.json"],
+        legacy_paths=[
+            legacy_files_dir / "run_meta.json",
+            out_dir / "run_meta.json",
+        ],
     )
     save_json(
         {
@@ -2418,7 +2484,10 @@ def main(args):
             "n_hits": int(n_hits),
         },
         files_dir / f"run_meta_{args.property}.json",
-        legacy_paths=[out_dir / f"run_meta_{args.property}.json"],
+        legacy_paths=[
+            legacy_files_dir / f"run_meta_{args.property}.json",
+            out_dir / f"run_meta_{args.property}.json",
+        ],
     )
 
     generate_figures = args.generate_figures
@@ -2435,10 +2504,10 @@ def main(args):
             target_mode=target_mode,
             epsilon=epsilon,
             source_meta=source_meta,
-            figures_dir=step_dirs["figures_dir"],
+            figures_dir=property_step_dirs["figures_dir"],
         )
 
-    print(f"Saved metrics_inverse.csv to {results_dir}")
+    print(f"Saved metrics_inverse.csv to {property_step_dirs['step_dir']}")
 
 
 if __name__ == "__main__":
