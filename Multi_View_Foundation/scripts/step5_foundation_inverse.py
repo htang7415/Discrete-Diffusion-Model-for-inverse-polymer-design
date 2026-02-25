@@ -401,6 +401,367 @@ def _plot_f5_diagnostics(
         )
 
 
+def _rdkit_mol_from_polymer_smiles(smiles: str):
+    if Chem is None:
+        return None
+    text = str(smiles).strip()
+    if not text:
+        return None
+    try:
+        mol = Chem.MolFromSmiles(text.replace("*", "[H]"))
+        if mol is not None:
+            return mol
+    except Exception:
+        pass
+    try:
+        return Chem.MolFromSmiles(text)
+    except Exception:
+        return None
+
+
+def _count_rings(smiles: str) -> Optional[int]:
+    mol = _rdkit_mol_from_polymer_smiles(smiles)
+    if mol is None:
+        return None
+    try:
+        return int(mol.GetRingInfo().NumRings())
+    except Exception:
+        return None
+
+
+def _count_heavy_atoms(smiles: str) -> Optional[int]:
+    mol = _rdkit_mol_from_polymer_smiles(smiles)
+    if mol is None:
+        return None
+    try:
+        return int(mol.GetNumHeavyAtoms())
+    except Exception:
+        return None
+
+
+def _short_text(text: Any, max_len: int = 44) -> str:
+    s = str(text)
+    if len(s) <= max_len:
+        return s
+    return s[: max(0, max_len - 3)] + "..."
+
+
+def _build_f5_accepted_polymer_report(
+    *,
+    accepted_df: pd.DataFrame,
+    property_name: str,
+    target_value: float,
+    target_mode: str,
+    epsilon: float,
+    sampling_target: int,
+) -> Tuple[pd.DataFrame, dict]:
+    mode = str(target_mode).strip().lower()
+    report = accepted_df.copy()
+    if report.empty:
+        summary = {
+            "property": property_name,
+            "target_value": float(target_value),
+            "target_mode": mode,
+            "epsilon": float(epsilon),
+            "sampling_target": int(sampling_target),
+            "n_accepted": 0,
+            "acceptance_ratio_vs_target": 0.0,
+        }
+        return report, summary
+
+    report["prediction"] = pd.to_numeric(report.get("prediction"), errors="coerce")
+    report["target_excess"] = pd.to_numeric(report.get("target_excess"), errors="coerce")
+    report["target_violation"] = pd.to_numeric(report.get("target_violation"), errors="coerce")
+    report["d2_distance"] = pd.to_numeric(report.get("d2_distance"), errors="coerce")
+    report["sa_score"] = pd.to_numeric(report.get("sa_score"), errors="coerce")
+    report["prediction_std"] = pd.to_numeric(report.get("prediction_std"), errors="coerce")
+
+    # Ranking policy:
+    # - ge/le: maximize target_excess
+    # - window: minimize target_violation
+    if mode in {"ge", "le"}:
+        primary = -report["target_excess"].fillna(-np.inf)
+        rank_score = report["target_excess"].fillna(np.nan)
+    else:
+        fallback_violation = pd.to_numeric(report.get("abs_error"), errors="coerce")
+        violation = report["target_violation"].where(report["target_violation"].notna(), fallback_violation)
+        primary = violation.fillna(np.inf)
+        rank_score = -violation.fillna(np.nan)
+
+    report["_rank_primary"] = primary
+    report["_rank_secondary"] = report["d2_distance"].fillna(np.inf)
+    report["_rank_tertiary"] = report["prediction_std"].fillna(np.inf)
+    report["_rank_score"] = rank_score
+    report = report.sort_values(
+        ["_rank_primary", "_rank_secondary", "_rank_tertiary"],
+        ascending=[True, True, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    report["rank"] = np.arange(1, len(report) + 1, dtype=np.int64)
+    report["rank_score"] = pd.to_numeric(report.get("_rank_score"), errors="coerce")
+
+    if "canonical_smiles" not in report.columns:
+        report["canonical_smiles"] = report["smiles"].astype(str).map(_canonicalize_smiles)
+    else:
+        report["canonical_smiles"] = report["canonical_smiles"].astype(str)
+
+    if "star_count" not in report.columns:
+        report["star_count"] = report["smiles"].astype(str).map(lambda x: int(str(x).count("*")))
+    else:
+        report["star_count"] = pd.to_numeric(report["star_count"], errors="coerce")
+
+    if "aromatic_ring_count" not in report.columns:
+        report["aromatic_ring_count"] = report["smiles"].astype(str).map(_count_aromatic_rings)
+    if "ring_count" not in report.columns:
+        report["ring_count"] = report["smiles"].astype(str).map(_count_rings)
+    if "heavy_atom_count" not in report.columns:
+        report["heavy_atom_count"] = report["smiles"].astype(str).map(_count_heavy_atoms)
+
+    if report["sa_score"].isna().any():
+        missing_mask = report["sa_score"].isna()
+        computed = report.loc[missing_mask, "smiles"].astype(str).map(_compute_sa_score)
+        report.loc[missing_mask, "sa_score"] = pd.to_numeric(computed, errors="coerce")
+
+    mean_pred = float(report["prediction"].mean()) if report["prediction"].notna().any() else np.nan
+    mean_excess = float(report["target_excess"].mean()) if report["target_excess"].notna().any() else np.nan
+    mean_violation = float(report["target_violation"].mean()) if report["target_violation"].notna().any() else np.nan
+    mean_d2 = float(report["d2_distance"].mean()) if report["d2_distance"].notna().any() else np.nan
+    mean_sa = float(report["sa_score"].mean()) if report["sa_score"].notna().any() else np.nan
+    unique_ratio = float(report["canonical_smiles"].nunique() / max(len(report), 1))
+    novelty_ratio = float(pd.to_numeric(report.get("is_novel"), errors="coerce").fillna(0).mean()) if "is_novel" in report.columns else np.nan
+
+    summary = {
+        "property": property_name,
+        "target_value": float(target_value),
+        "target_mode": mode,
+        "epsilon": float(epsilon),
+        "sampling_target": int(sampling_target),
+        "n_accepted": int(len(report)),
+        "acceptance_ratio_vs_target": round(float(len(report) / max(sampling_target, 1)), 4),
+        "mean_prediction": round(mean_pred, 6) if np.isfinite(mean_pred) else np.nan,
+        "mean_target_excess": round(mean_excess, 6) if np.isfinite(mean_excess) else np.nan,
+        "mean_target_violation": round(mean_violation, 6) if np.isfinite(mean_violation) else np.nan,
+        "mean_d2_distance": round(mean_d2, 6) if np.isfinite(mean_d2) else np.nan,
+        "mean_sa_score": round(mean_sa, 6) if np.isfinite(mean_sa) else np.nan,
+        "unique_ratio_canonical": round(unique_ratio, 4),
+        "novelty_ratio": round(novelty_ratio, 4) if np.isfinite(novelty_ratio) else np.nan,
+    }
+
+    ordered_cols = [
+        "rank",
+        "smiles",
+        "canonical_smiles",
+        "proposal_view",
+        "matched_class",
+        "prediction",
+        "prediction_std",
+        "target_excess",
+        "target_violation",
+        "d2_distance",
+        "sa_score",
+        "star_count",
+        "aromatic_ring_count",
+        "ring_count",
+        "heavy_atom_count",
+        "is_novel",
+        "batch_idx",
+        "rank_score",
+    ]
+    existing_cols = [c for c in ordered_cols if c in report.columns]
+    other_cols = [c for c in report.columns if c not in existing_cols and not c.startswith("_")]
+    report = report[existing_cols + other_cols]
+    return report, summary
+
+
+def _plot_f5_accepted_polymer_overview(
+    *,
+    report_df: pd.DataFrame,
+    property_name: str,
+    target_value: float,
+    target_mode: str,
+    epsilon: float,
+    figures_dir: Path,
+) -> None:
+    if plt is None or report_df.empty:
+        return
+
+    mode = str(target_mode).strip().lower()
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    ax0, ax1, ax2, ax3 = axes.reshape(-1)
+
+    # A) Ranked score bars.
+    top_n = min(30, len(report_df))
+    top_df = report_df.head(top_n).copy()
+    y = np.arange(top_n, dtype=np.float32)
+    if mode in {"ge", "le"}:
+        vals = pd.to_numeric(top_df.get("target_excess"), errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+        x_label = _target_excess_axis_label(property_name, mode)
+        colors = ["#2A9D8F" if v >= 0 else "#E76F51" for v in vals]
+    else:
+        violation = pd.to_numeric(top_df.get("target_violation"), errors="coerce").fillna(np.inf).to_numpy(dtype=np.float32)
+        vals = -violation
+        x_label = "Negative target violation (higher is better)"
+        colors = ["#2A9D8F"] * len(vals)
+
+    labels = [f"#{int(r)}" for r in top_df["rank"].tolist()]
+    ax0.barh(y, vals, color=colors, alpha=0.9)
+    ax0.set_yticks(y)
+    ax0.set_yticklabels(labels)
+    ax0.invert_yaxis()
+    ax0.set_xlabel(x_label)
+    ax0.set_title(f"Top accepted {property_name} candidates", fontsize=14, fontweight="bold")
+    ax0.grid(axis="x", alpha=0.25)
+
+    # B) Prediction vs OOD distance scatter.
+    scatter_df = report_df.dropna(subset=["prediction", "d2_distance"]).copy()
+    if not scatter_df.empty:
+        color_vals = pd.to_numeric(scatter_df.get("target_excess"), errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
+        sc = ax1.scatter(
+            scatter_df["d2_distance"].to_numpy(dtype=np.float32),
+            scatter_df["prediction"].to_numpy(dtype=np.float32),
+            c=color_vals,
+            cmap="RdYlGn",
+            s=34,
+            alpha=0.88,
+            edgecolor="white",
+            linewidth=0.3,
+        )
+        ax1.axhline(float(target_value), color="#111111", linestyle="--", linewidth=1.0, label="Target")
+        if mode == "window":
+            ax1.axhspan(float(target_value) - float(epsilon), float(target_value) + float(epsilon), color="#2A9D8F", alpha=0.12)
+        ax1.set_xlabel("D2 distance (lower is better)")
+        ax1.set_ylabel(f"Predicted {property_name}")
+        ax1.set_title("Accepted candidates: property vs OOD", fontsize=14, fontweight="bold")
+        ax1.grid(alpha=0.25)
+        ax1.legend(loc="best", fontsize=11)
+        fig.colorbar(sc, ax=ax1, fraction=0.046, pad=0.04, label="Target excess")
+    else:
+        ax1.text(0.5, 0.5, "No finite prediction/d2 points", ha="center", va="center")
+        ax1.set_axis_off()
+
+    # C) Descriptor profile boxplots.
+    descriptor_cols = [
+        ("d2_distance", "D2"),
+        ("sa_score", "SA"),
+        ("aromatic_ring_count", "Aro rings"),
+        ("ring_count", "Rings"),
+        ("heavy_atom_count", "Heavy atoms"),
+    ]
+    arrays = []
+    labels_c = []
+    for col, label in descriptor_cols:
+        if col in report_df.columns:
+            arr = pd.to_numeric(report_df[col], errors="coerce").dropna().to_numpy(dtype=np.float32)
+            if arr.size:
+                arrays.append(arr)
+                labels_c.append(label)
+    if arrays:
+        bp = ax2.boxplot(arrays, labels=labels_c, patch_artist=True, showfliers=False)
+        palette = ["#4E79A7", "#2A9D8F", "#F4A261", "#264653", "#E76F51"]
+        for patch, color in zip(bp["boxes"], palette):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.55)
+        ax2.set_title("Accepted polymer descriptor profile", fontsize=14, fontweight="bold")
+        ax2.grid(axis="y", alpha=0.25)
+    else:
+        ax2.text(0.5, 0.5, "No descriptor values", ha="center", va="center")
+        ax2.set_axis_off()
+
+    # D) Top-ranked table.
+    show_n = min(12, len(report_df))
+    table_df = report_df.head(show_n).copy()
+    cols = []
+    if "rank" in table_df.columns:
+        cols.append(("rank", "Rank"))
+    cols.append(("smiles", "Polymer p-SMILES"))
+    if "prediction" in table_df.columns:
+        cols.append(("prediction", "Pred"))
+    if "target_excess" in table_df.columns:
+        cols.append(("target_excess", "Excess"))
+    if "d2_distance" in table_df.columns:
+        cols.append(("d2_distance", "D2"))
+    if "sa_score" in table_df.columns:
+        cols.append(("sa_score", "SA"))
+
+    col_labels = [x[1] for x in cols]
+    cell_rows = []
+    for _, row in table_df.iterrows():
+        row_vals = []
+        for key, _ in cols:
+            value = row.get(key, "")
+            if key == "smiles":
+                row_vals.append(_short_text(value, max_len=38))
+            elif isinstance(value, (float, np.floating)):
+                row_vals.append(f"{float(value):.3f}" if np.isfinite(value) else "")
+            else:
+                row_vals.append(str(value))
+        cell_rows.append(row_vals)
+
+    ax3.axis("off")
+    if cell_rows:
+        table = ax3.table(cellText=cell_rows, colLabels=col_labels, loc="center", cellLoc="center")
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.0, 1.15)
+        ax3.set_title("Top accepted polymers (detailed info)", fontsize=14, fontweight="bold", pad=8)
+    else:
+        ax3.text(0.5, 0.5, "No accepted candidates", ha="center", va="center")
+
+    fig.suptitle(f"F5 accepted polymer report: {property_name}", fontsize=16, fontweight="bold", y=0.995)
+    fig.tight_layout(rect=[0, 0, 1, 0.98])
+    _save_figure_png(fig, figures_dir / f"figure_f5_accepted_polymer_overview_{property_name}")
+    plt.close(fig)
+
+
+def _plot_f5_accepted_polymer_gallery(
+    *,
+    report_df: pd.DataFrame,
+    property_name: str,
+    figures_dir: Path,
+    top_n: int = 36,
+) -> None:
+    if report_df.empty or Chem is None:
+        return
+    try:
+        from rdkit.Chem import Draw  # type: ignore
+    except Exception:
+        return
+
+    gallery_df = report_df.head(max(int(top_n), 1)).copy()
+    mols = []
+    legends = []
+    for _, row in gallery_df.iterrows():
+        smi = str(row.get("smiles", "")).strip()
+        mol = _rdkit_mol_from_polymer_smiles(smi)
+        if mol is None:
+            continue
+        rank_val = row.get("rank", "")
+        pred_val = pd.to_numeric(pd.Series([row.get("prediction")]), errors="coerce").iloc[0]
+        d2_val = pd.to_numeric(pd.Series([row.get("d2_distance")]), errors="coerce").iloc[0]
+        rank_text = str(int(rank_val)) if pd.notna(rank_val) else "?"
+        legend = f"#{rank_text} | pred={pred_val:.2f} | d2={d2_val:.2f}" if np.isfinite(pred_val) and np.isfinite(d2_val) else f"#{rank_text}"
+        mols.append(mol)
+        legends.append(legend)
+
+    if not mols:
+        return
+
+    try:
+        img = Draw.MolsToGridImage(
+            mols,
+            molsPerRow=6,
+            subImgSize=(260, 200),
+            legends=legends,
+            useSVG=False,
+        )
+        out_path = figures_dir / f"figure_f5_accepted_polymer_gallery_{property_name}.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if hasattr(img, "save"):
+            img.save(str(out_path))
+    except Exception:
+        return
+
+
 def _f5_cfg(config: dict) -> dict:
     merged = dict(DEFAULT_F5_RESAMPLE_SETTINGS)
     merged.update(config.get("foundation_inverse", {}) or {})
@@ -2445,6 +2806,49 @@ def main(args):
         index=False,
     )
 
+    report_df, report_summary = _build_f5_accepted_polymer_report(
+        accepted_df=accepted_df,
+        property_name=args.property,
+        target_value=target_value,
+        target_mode=target_mode,
+        epsilon=epsilon,
+        sampling_target=int(source_meta.get("sampling_target", len(accepted_df))),
+    )
+    save_csv(
+        report_df,
+        files_dir / "accepted_polymer_report.csv",
+        legacy_paths=[
+            legacy_files_dir / "accepted_polymer_report.csv",
+            out_dir / "accepted_polymer_report.csv",
+        ],
+        index=False,
+    )
+    save_csv(
+        report_df,
+        files_dir / f"accepted_polymer_report_{args.property}.csv",
+        legacy_paths=[
+            legacy_files_dir / f"accepted_polymer_report_{args.property}.csv",
+            out_dir / f"accepted_polymer_report_{args.property}.csv",
+        ],
+        index=False,
+    )
+    save_json(
+        report_summary,
+        files_dir / "accepted_polymer_summary.json",
+        legacy_paths=[
+            legacy_files_dir / "accepted_polymer_summary.json",
+            out_dir / "accepted_polymer_summary.json",
+        ],
+    )
+    save_json(
+        report_summary,
+        files_dir / f"accepted_polymer_summary_{args.property}.json",
+        legacy_paths=[
+            legacy_files_dir / f"accepted_polymer_summary_{args.property}.json",
+            out_dir / f"accepted_polymer_summary_{args.property}.json",
+        ],
+    )
+
     save_json(
         {
             **source_meta,
@@ -2505,6 +2909,20 @@ def main(args):
             epsilon=epsilon,
             source_meta=source_meta,
             figures_dir=property_step_dirs["figures_dir"],
+        )
+        _plot_f5_accepted_polymer_overview(
+            report_df=report_df,
+            property_name=args.property,
+            target_value=target_value,
+            target_mode=target_mode,
+            epsilon=epsilon,
+            figures_dir=property_step_dirs["figures_dir"],
+        )
+        _plot_f5_accepted_polymer_gallery(
+            report_df=report_df,
+            property_name=args.property,
+            figures_dir=property_step_dirs["figures_dir"],
+            top_n=min(36, int(source_meta.get("sampling_target", 100))),
         )
 
     print(f"Saved metrics_inverse.csv to {property_step_dirs['step_dir']}")

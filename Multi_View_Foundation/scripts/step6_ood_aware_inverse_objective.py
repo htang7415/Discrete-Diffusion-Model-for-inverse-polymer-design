@@ -791,16 +791,34 @@ def main(args):
             f"property={property_name}. searched={searched}"
         )
 
+    property_key = _normalize_property_name(property_name)
+    target_map = _merge_property_maps(cfg_f5.get("targets"), cfg_step6.get("targets"))
+    target_mode_map = _merge_property_maps(cfg_f5.get("target_modes"), cfg_step6.get("target_modes"))
+    epsilon_map = _merge_property_maps(cfg_f5.get("epsilons"), cfg_step6.get("epsilons"))
+
     target = _to_float_or_none(args.target)
+    if target is None:
+        target = _to_float_or_none(target_map.get(property_key))
     if target is None:
         target = _to_float_or_none(cfg_step6.get("target"))
     if target is None:
         target = _to_float_or_none(cfg_f5.get("target"))
     if target is None:
-        raise ValueError("target is required (set --target or ood_aware_inverse.target/foundation_inverse.target).")
+        raise ValueError(
+            "target is required (set --target or per-property targets map "
+            "or ood_aware_inverse.target/foundation_inverse.target)."
+        )
 
-    target_mode = args.target_mode or str(cfg_step6.get("target_mode", "")).strip() or str(cfg_f5.get("target_mode", "window")).strip() or "window"
+    target_mode = (
+        args.target_mode
+        or str(target_mode_map.get(property_key, "")).strip()
+        or str(cfg_step6.get("target_mode", "")).strip()
+        or str(cfg_f5.get("target_mode", "window")).strip()
+        or "window"
+    )
     epsilon = _to_float_or_none(args.epsilon)
+    if epsilon is None:
+        epsilon = _to_float_or_none(epsilon_map.get(property_key))
     if epsilon is None:
         epsilon = _to_float_or_none(cfg_step6.get("epsilon"))
     if epsilon is None:
@@ -867,10 +885,8 @@ def main(args):
     if ood_k <= 0:
         raise ValueError("ood_k must be > 0.")
 
-    target_map = _merge_property_maps(cfg_f5.get("targets"), cfg_step6.get("targets"))
-    target_mode_map = _merge_property_maps(cfg_f5.get("target_modes"), cfg_step6.get("target_modes"))
-    target_map[_normalize_property_name(property_name)] = float(target)
-    target_mode_map[_normalize_property_name(property_name)] = str(target_mode).strip().lower()
+    target_map[property_key] = float(target)
+    target_mode_map[property_key] = str(target_mode).strip().lower()
 
     constraint_weights_map = _normalize_property_map(cfg_step6.get("constraint_weights"))
     constraint_properties = _parse_property_list(args.constraint_properties)

@@ -110,7 +110,7 @@ ood:
 
 # F3 property-head args
 property:
-  files: ["Td.csv"]
+  files: ["Tg.csv", "Tm.csv", "Td.csv", "Eg.csv"]
   max_samples: null
   train_ratio: 0.8
   val_ratio: 0.1
@@ -127,31 +127,31 @@ property:
     final_training_epochs: 500
     metric: "r2"
     search_space:
-      num_layers: [3, 4, 5]
+      num_layers: [2, 3, 4, 5]
       neurons: [64, 128, 256, 512, 1024]
       learning_rate: [4.0e-4, 6.0e-4, 8.0e-4, 1.0e-3]
       dropout: [0.1, 0.2, 0.3]
-      batch_size: [8, 16, 32, 64, 128]
+      batch_size: [4, 8, 16, 32, 64, 128]
 
 # F5 foundation inverse args
 foundation_inverse:
   enabled: true
-  run_all_properties: false       # single-property test default
-  property: "Td"  # Tg, Tm, Td, Eg
-  target: 300.0
+  run_all_properties: true
+  property: "Tg, Tm, Td, Eg"
+  targets:
+    Tg: 300.0
+    Tm: 300.0
+    Td: 450.0
+    Eg: 6.0
   target_mode: "ge"  # window: |pred-target|<=epsilon, ge: pred>=target, le: pred<=target
   epsilon: 20.0
-  # Optional per-property overrides used when run_all_properties=true.
-  targets: {}
-  target_modes: {}
-  epsilons: {}
-  sampling_target: 100              # accepted hit target for resampling
-  sampling_num_per_batch: 512       # candidates generated each outer batch
-  sampling_batch_size: 128          # model decode batch size inside sampler
-  sampling_max_batches: 200         # hard stop to avoid infinite loops
-  proposal_views: ["selfies", "smiles"]       # all|csv/list, proposal generation views used in round-robin
-  sampling_temperature: null        # null => use method sampling.temperature
-  sampling_num_atoms: null          # graph-only optional override
+  sampling_target: 100
+  sampling_num_per_batch: 512
+  sampling_batch_size: 128
+  sampling_max_batches: 1000
+  proposal_views: ["selfies"]
+  sampling_temperature: null
+  sampling_num_atoms: null
   # Optional comma-separated class filter. Supported classes:
   # polyimide, polyester, polyamide, polyurethane, polyether,
   # polysiloxane, polycarbonate, polysulfone, polyacrylate, polystyrene
@@ -163,8 +163,7 @@ foundation_inverse:
   max_sa: 4.5
   per_view_min_hits: 2
   per_view_quota_relax_after_batches: 12
-  committee_properties: ["Td"]  # explicit committee export list for F5/F6/F7 workflow
-  property_model_mode: "all"          # single|all; all = aggregate all available F3 models for this property
+  property_model_mode: "single"
   property_model_path: ""
   rerank_strategy: "d2_distance"
   rerank_top_k: 100
@@ -177,17 +176,13 @@ foundation_inverse:
 # F6 OOD-aware inverse args
 ood_aware_inverse:
   enabled: true
-  run_all_properties: false       # single-property test default
-  encoder_view: ""              # fallback anchor view for metadata/model_size if needed
-  ood_views: "all"              # all|csv list; multi-view OOD distance aggregation uses mean over available views
-  property: "Td"                # fallback: foundation_inverse.property
-  target: null                  # fallback: foundation_inverse.target
-  target_mode: ""               # fallback: foundation_inverse.target_mode (window/ge/le)
-  epsilon: null                 # fallback: foundation_inverse.epsilon
-  # Optional per-property overrides used when run_all_properties=true.
-  targets: {}
-  target_modes: {}
-  epsilons: {}
+  run_all_properties: true
+  encoder_view: ""
+  ood_views: "all"
+  property: "Tg, Tm, Td, Eg"
+  target: null
+  target_mode: ""
+  epsilon: null
   top_k: 100
   property_weight: 0.6
   ood_weight: 0.2
@@ -218,7 +213,7 @@ ood_aware_inverse:
 # F7 chemistry/physics analysis args
 chem_physics_analysis:
   enabled: true
-  properties: ["Td"]
+  properties: ["Tg", "Tm", "Td", "Eg"]
   # Optional path templates with {property}, e.g.:
   # "results/step5_foundation_inverse/files/candidate_scores_{property}.csv"
   candidate_scores_template: ""
