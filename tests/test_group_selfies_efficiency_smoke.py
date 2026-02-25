@@ -6,22 +6,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 GROUP_STEP1_SCRIPTS = [
-    "AR_Transformer_Group_SELFIES/scripts/step1_train_backbone.py",
     "Bi_Diffusion_Group_SELFIES/scripts/step1_train_backbone.py",
 ]
 
 GROUP_TRAINERS = [
-    "AR_Transformer_Group_SELFIES/src/training/trainer_backbone.py",
     "Bi_Diffusion_Group_SELFIES/src/training/trainer_backbone.py",
 ]
 
 GROUP_CONFIGS = [
-    "AR_Transformer_Group_SELFIES/configs/config.yaml",
     "Bi_Diffusion_Group_SELFIES/configs/config.yaml",
 ]
 
 GROUP_SAMPLERS = [
-    "AR_Transformer_Group_SELFIES/src/data/samplers.py",
     "Bi_Diffusion_Group_SELFIES/src/data/samplers.py",
 ]
 
@@ -46,11 +42,11 @@ def test_group_trainers_seed_batch_sampler_each_epoch():
         assert 'if hasattr(batch_sampler, "set_epoch"):' in source
 
 
-def test_group_configs_enable_dynamic_padding_and_length_bucketing():
+def test_group_configs_define_dynamic_padding_and_bucketing_controls():
     for rel_path in GROUP_CONFIGS:
         source = _read(rel_path)
         assert "dynamic_padding: true" in source
-        assert "length_bucket_sampler: true" in source
+        assert "length_bucket_sampler: false" in source
         assert "bucket_size_multiplier: 50" in source
 
 

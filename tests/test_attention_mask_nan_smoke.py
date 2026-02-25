@@ -4,9 +4,6 @@ from pathlib import Path
 
 
 BACKBONE_FILES = [
-    Path("AR_Transformer_SMILES/src/model/backbone.py"),
-    Path("AR_Transformer_SELFIES/src/model/backbone.py"),
-    Path("AR_Transformer_Group_SELFIES/src/model/backbone.py"),
     Path("Bi_Diffusion_SMILES/src/model/backbone.py"),
     Path("Bi_Diffusion_SELFIES/src/model/backbone.py"),
     Path("Bi_Diffusion_Group_SELFIES/src/model/backbone.py"),

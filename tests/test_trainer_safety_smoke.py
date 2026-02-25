@@ -4,18 +4,12 @@ from pathlib import Path
 
 
 SEQUENCE_BACKBONE_TRAINERS = [
-    Path("AR_Transformer_SMILES/src/training/trainer_backbone.py"),
-    Path("AR_Transformer_SELFIES/src/training/trainer_backbone.py"),
-    Path("AR_Transformer_Group_SELFIES/src/training/trainer_backbone.py"),
     Path("Bi_Diffusion_SMILES/src/training/trainer_backbone.py"),
     Path("Bi_Diffusion_SELFIES/src/training/trainer_backbone.py"),
     Path("Bi_Diffusion_Group_SELFIES/src/training/trainer_backbone.py"),
 ]
 
 PROPERTY_TRAINERS = [
-    Path("AR_Transformer_SMILES/src/training/trainer_property.py"),
-    Path("AR_Transformer_SELFIES/src/training/trainer_property.py"),
-    Path("AR_Transformer_Group_SELFIES/src/training/trainer_property.py"),
     Path("Bi_Diffusion_SMILES/src/training/trainer_property.py"),
     Path("Bi_Diffusion_SELFIES/src/training/trainer_property.py"),
     Path("Bi_Diffusion_Group_SELFIES/src/training/trainer_property.py"),

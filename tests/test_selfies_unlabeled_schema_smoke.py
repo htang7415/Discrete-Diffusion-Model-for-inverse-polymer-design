@@ -10,38 +10,28 @@ ALL_STEP0_SCRIPTS = [
     "Bi_Diffusion_SELFIES/scripts/step0_prepare_data.py",
     "Bi_Diffusion_Group_SELFIES/scripts/step0_prepare_data.py",
     "Bi_Diffusion_graph/scripts/step0_prepare_data.py",
-    "AR_Transformer_SMILES/scripts/step0_prepare_data.py",
-    "AR_Transformer_SELFIES/scripts/step0_prepare_data.py",
-    "AR_Transformer_Group_SELFIES/scripts/step0_prepare_data.py",
 ]
 
 SELFIES_STEP0_SCRIPTS = [
     "Bi_Diffusion_SELFIES/scripts/step0_prepare_data.py",
-    "AR_Transformer_SELFIES/scripts/step0_prepare_data.py",
 ]
 
 STEP1_SCRIPTS = [
     "Bi_Diffusion_SELFIES/scripts/step1_train_backbone.py",
-    "AR_Transformer_SELFIES/scripts/step1_train_backbone.py",
 ]
 
 STEP6_SCRIPTS = [
     "Bi_Diffusion_SELFIES/scripts/step6_hyperparameter_tuning.py",
-    "AR_Transformer_SELFIES/scripts/step6_hyperparameter_tuning.py",
 ]
 
 LENGTH_SAMPLING_SCRIPTS = [
     "Bi_Diffusion_SELFIES/scripts/step2_sample_and_evaluate.py",
-    "AR_Transformer_SELFIES/scripts/step2_sample_and_evaluate.py",
     "Bi_Diffusion_SELFIES/scripts/step4_inverse_design.py",
-    "AR_Transformer_SELFIES/scripts/step4_inverse_design.py",
     "Bi_Diffusion_SELFIES/scripts/step5_class_design.py",
-    "AR_Transformer_SELFIES/scripts/step5_class_design.py",
 ]
 
 UTILS_FILES = [
     "Bi_Diffusion_SELFIES/src/utils/selfies_utils.py",
-    "AR_Transformer_SELFIES/src/utils/selfies_utils.py",
 ]
 
 

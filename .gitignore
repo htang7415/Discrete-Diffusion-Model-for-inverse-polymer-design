@@ -6,7 +6,8 @@ results/
 results_1
 Data/
 *Data
-Generated_polymers
+*results_small
+*logs
 .claude
 .codex
 

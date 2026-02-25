@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-METHOD_DIR_PREFIXES = ("Bi_Diffusion_", "AR_Transformer_")
+METHOD_DIR_PREFIXES = ("Bi_Diffusion_",)
 
 REPRESENTATION_ALIASES = {
     "SMILES": "SMILES",
@@ -161,9 +161,6 @@ def parse_method_representation(folder_name: str) -> MethodInfo:
     if folder_name.startswith("Bi_Diffusion_"):
         method = "Bi_Diffusion"
         rep = folder_name.replace("Bi_Diffusion_", "")
-    elif folder_name.startswith("AR_Transformer_"):
-        method = "AR_Transformer"
-        rep = folder_name.replace("AR_Transformer_", "")
     else:
         method = "Unknown"
         rep = folder_name

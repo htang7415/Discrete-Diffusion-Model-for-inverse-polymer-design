@@ -435,7 +435,7 @@ def _save_paper_assets(
     csv_aliases = {
         "metrics_alignment.csv": "figure_a_retrieval.csv",
         "metrics_ood.csv": "figure_b_ood_shift.csv",
-        "metrics_generation.csv": "figure_c_diffusion_vs_ar.csv",
+        "metrics_generation.csv": "figure_c_diffusion_tradeoff.csv",
         "metrics_constraints.csv": "figure_d_constraints.csv",
         "metrics_inverse.csv": "figure_e_inverse_design.csv",
         "metrics_property.csv": "table_property.csv",
@@ -469,10 +469,10 @@ def _save_paper_assets(
             "figure_b_ood_shift",
         ),
         (
-            "plot_figure_c_diffusion_vs_ar.py",
-            "plot_diffusion_vs_ar",
+            "plot_figure_c_diffusion_tradeoff.py",
+            "plot_diffusion_tradeoff",
             "metrics_generation.csv",
-            "figure_c_diffusion_vs_ar",
+            "figure_c_diffusion_tradeoff",
         ),
         (
             "plot_figure_d_constraints.py",
