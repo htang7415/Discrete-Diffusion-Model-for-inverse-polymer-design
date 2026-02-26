@@ -24,6 +24,12 @@ def _to_int(value: Any, name: str) -> int:
         raise ValueError(f"{name} must be integer-like, got {value!r} ({type(value).__name__})")
 
 
+def _cfg_value(cfg: Dict[str, Any], key: str, default: Any) -> Any:
+    """Read config value where explicit null should still use the default."""
+    value = cfg.get(key, default)
+    return default if value is None else value
+
+
 def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     """Get underlying module from DDP/torch.compile wrappers."""
     unwrapped = model
@@ -209,28 +215,33 @@ def _build_muon_param_groups(
             "num_adamw_tensors": len(adamw_params),
         }
 
-    adamw_lr = _to_float(muon_cfg.get("adamw_lr", base_learning_rate), "optimizer.muon_adamw.adamw_lr")
+    adamw_lr = _to_float(
+        _cfg_value(muon_cfg, "adamw_lr", base_learning_rate),
+        "optimizer.muon_adamw.adamw_lr",
+    )
     muon_lr_raw = muon_cfg.get("muon_lr", None)
     if muon_lr_raw is None:
         muon_lr_multiplier = _to_float(
-            muon_cfg.get("muon_lr_multiplier", 20.0),
+            _cfg_value(muon_cfg, "muon_lr_multiplier", 20.0),
             "optimizer.muon_adamw.muon_lr_multiplier",
         )
         muon_lr = adamw_lr * muon_lr_multiplier
     else:
         muon_lr = _to_float(muon_lr_raw, "optimizer.muon_adamw.muon_lr")
 
-    adamw_betas_raw = muon_cfg.get("adamw_betas", [0.9, 0.95])
+    adamw_betas_raw = _cfg_value(muon_cfg, "adamw_betas", [0.9, 0.95])
     if not isinstance(adamw_betas_raw, (list, tuple)) or len(adamw_betas_raw) != 2:
         raise ValueError("optimizer.muon_adamw.adamw_betas must be a length-2 list.")
     adamw_betas = (float(adamw_betas_raw[0]), float(adamw_betas_raw[1]))
-    adamw_eps = _to_float(muon_cfg.get("adamw_eps", 1.0e-8), "optimizer.muon_adamw.adamw_eps")
-    muon_momentum = _to_float(
-        muon_cfg.get("muon_momentum", 0.95), "optimizer.muon_adamw.muon_momentum"
+    adamw_eps = _to_float(
+        _cfg_value(muon_cfg, "adamw_eps", 1.0e-8), "optimizer.muon_adamw.adamw_eps"
     )
-    muon_nesterov = bool(muon_cfg.get("muon_nesterov", True))
+    muon_momentum = _to_float(
+        _cfg_value(muon_cfg, "muon_momentum", 0.95), "optimizer.muon_adamw.muon_momentum"
+    )
+    muon_nesterov = bool(_cfg_value(muon_cfg, "muon_nesterov", True))
     backend_steps = _to_int(
-        muon_cfg.get("backend_steps", 5), "optimizer.muon_adamw.backend_steps"
+        _cfg_value(muon_cfg, "backend_steps", 5), "optimizer.muon_adamw.backend_steps"
     )
 
     param_groups = [
