@@ -6,6 +6,7 @@ import sys
 import json
 import argparse
 import math
+import time
 from pathlib import Path
 
 # Add parent directory to path
@@ -419,7 +420,9 @@ def main(args):
     )
 
     # Train
+    train_start_time = time.perf_counter()
     history = trainer.train()
+    training_time_sec = time.perf_counter() - train_start_time
 
     if is_main_process:
         # Create loss plots
@@ -473,7 +476,10 @@ def main(args):
             'best_val_loss': round(history['best_val_loss'], 4),
             'final_train_loss': round(history['train_losses'][-1], 4) if history['train_losses'] else None,
             'final_val_loss': round(history['val_losses'][-1], 4) if history['val_losses'] else None,
+            'training_time_sec': round(float(training_time_sec), 2),
+            'training_time_hr': round(float(training_time_sec) / 3600.0, 4),
             'num_params': num_params,
+            'num_trainable_params': num_trainable,
             'Nmax': Nmax,
             'atom_vocab_size': atom_vocab_size,
             'edge_vocab_size': edge_vocab_size
@@ -488,8 +494,9 @@ def main(args):
         print(f"\nResults:")
         print(f"  Best validation loss: {history['best_val_loss']:.4f}")
         print(f"  Total training steps: {trainer.global_step}")
+        print(f"  Training time: {training_time_sec:.2f} sec ({training_time_sec / 3600.0:.4f} hr)")
         print(f"  Checkpoints saved to: {step_dir / 'checkpoints'}")
-        print(f"  Metrics saved to: {metrics_dir}")
+        print(f"  Metrics saved to: {metrics_dir} (including training_summary.csv)")
         print(f"  Figures saved to: {figures_dir}")
         print("=" * 60)
 

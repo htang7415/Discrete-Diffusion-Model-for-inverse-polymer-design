@@ -5,6 +5,7 @@ import os
 import sys
 import argparse
 import math
+import time
 from functools import partial
 from pathlib import Path
 
@@ -445,7 +446,9 @@ def main(args):
     )
 
     # Train
+    train_start_time = time.perf_counter()
     history = trainer.train()
+    training_time_sec = time.perf_counter() - train_start_time
 
     # Create loss plot
     if is_main_process:
@@ -479,10 +482,25 @@ def main(args):
                 save_path=figures_dir / 'backbone_bpb_curve.png'
             )
 
+        summary = {
+            'total_steps': int(trainer.global_step),
+            'best_val_loss': round(float(history['best_val_loss']), 4),
+            'final_train_loss': round(float(history['train_losses'][-1]), 4) if history.get('train_losses') else None,
+            'final_val_loss': round(float(history['val_losses'][-1]), 4) if history.get('val_losses') else None,
+            'training_time_sec': round(float(training_time_sec), 2),
+            'training_time_hr': round(float(training_time_sec) / 3600.0, 4),
+            'num_params': int(num_params),
+            'num_trainable_params': int(num_trainable),
+        }
+        summary_df = pd.DataFrame([summary])
+        summary_df.to_csv(metrics_dir / 'training_summary.csv', index=False)
+
         print("\n" + "=" * 50)
         print("Backbone training complete!")
         print(f"Best validation loss: {history['best_val_loss']:.4f}")
+        print(f"Training time: {training_time_sec:.2f} sec ({training_time_sec / 3600.0:.4f} hr)")
         print(f"Checkpoints saved to: {step_dir / 'checkpoints'}")
+        print(f"Summary saved to: {metrics_dir / 'training_summary.csv'}")
         print("=" * 50)
 
     if distributed and dist.is_available() and dist.is_initialized():
