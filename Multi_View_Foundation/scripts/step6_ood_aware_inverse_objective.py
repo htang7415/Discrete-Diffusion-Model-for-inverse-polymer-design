@@ -67,11 +67,11 @@ SUPPORTED_DESCRIPTOR_CONSTRAINTS = {
 PUBLICATION_STYLE = {
     "font.family": "serif",
     "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
-    "axes.labelsize": 15,
-    "axes.titlesize": 15,
-    "xtick.labelsize": 15,
-    "ytick.labelsize": 15,
-    "legend.fontsize": 15,
+    "axes.labelsize": 16,
+    "axes.titlesize": 16,
+    "xtick.labelsize": 16,
+    "ytick.labelsize": 16,
+    "legend.fontsize": 16,
     "axes.linewidth": 0.9,
     "lines.linewidth": 1.8,
     "figure.dpi": 300,
@@ -123,8 +123,21 @@ def _to_float_or_none(value):
     return float(text)
 
 
+def _standardize_figure_text_and_legend(fig, font_size: int = 16, legend_loc: str = "best") -> None:
+    for text_obj in fig.findobj(match=lambda artist: hasattr(artist, "set_fontsize")):
+        try:
+            text_obj.set_fontsize(font_size)
+        except Exception:
+            continue
+    for ax in fig.axes:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.set_loc(legend_loc)
+
+
 def _save_figure_png(fig, output_base: Path) -> None:
     output_base.parent.mkdir(parents=True, exist_ok=True)
+    _standardize_figure_text_and_legend(fig, font_size=16, legend_loc="best")
     fig.savefig(output_base.with_suffix(".png"), dpi=600, bbox_inches="tight")
 
 

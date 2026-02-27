@@ -548,18 +548,33 @@ def _apply_plot_style() -> None:
             "axes.facecolor": "#FFFFFF",
             "axes.edgecolor": "#1F2937",
             "axes.labelcolor": "#111827",
-            "axes.titlesize": 13,
+            "axes.titlesize": 16,
             "axes.titleweight": "bold",
-            "axes.labelsize": 11,
+            "axes.labelsize": 16,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
             "xtick.color": "#111827",
             "ytick.color": "#111827",
             "grid.color": "#D1D5DB",
             "grid.alpha": 0.55,
-            "font.size": 10,
+            "font.size": 16,
             "legend.frameon": True,
+            "legend.fontsize": 16,
             "legend.edgecolor": "#D1D5DB",
         }
     )
+
+
+def _standardize_figure_text_and_legend(fig, font_size: int = 16, legend_loc: str = "best") -> None:
+    for text_obj in fig.findobj(match=lambda artist: hasattr(artist, "set_fontsize")):
+        try:
+            text_obj.set_fontsize(font_size)
+        except Exception:
+            continue
+    for ax in fig.axes:
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.set_loc(legend_loc)
 
 
 def _row_label(row: pd.Series) -> str:
@@ -659,6 +674,7 @@ def _plot_step1_bpb_heatmap(summary_df: pd.DataFrame, fig_dir: Path) -> Optional
     fig.tight_layout()
 
     out_path = fig_dir / "fig_01_step1_bpb_heatmap.png"
+    _standardize_figure_text_and_legend(fig, font_size=16, legend_loc="best")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -740,6 +756,7 @@ def _plot_step2_metrics_heatmap(summary_df: pd.DataFrame, fig_dir: Path) -> Opti
     fig.subplots_adjust(left=0.08, right=0.96, top=0.92, bottom=0.06, wspace=0.35)
 
     out_path = fig_dir / "fig_02_step2_metrics_heatmap.png"
+    _standardize_figure_text_and_legend(fig, font_size=16, legend_loc="best")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -807,6 +824,7 @@ def _plot_step2_tradeoff(summary_df: pd.DataFrame, fig_dir: Path) -> Optional[Pa
 
     fig.tight_layout()
     out_path = fig_dir / "fig_03_step2_tradeoff_scatter.png"
+    _standardize_figure_text_and_legend(fig, font_size=16, legend_loc="best")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return out_path
@@ -857,6 +875,7 @@ def _plot_step2_quality_ranking(summary_df: pd.DataFrame, fig_dir: Path) -> Opti
 
     fig.tight_layout()
     out_path = fig_dir / "fig_04_step2_quality_ranking.png"
+    _standardize_figure_text_and_legend(fig, font_size=16, legend_loc="best")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return out_path

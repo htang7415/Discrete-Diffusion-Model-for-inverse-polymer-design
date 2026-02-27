@@ -15,7 +15,7 @@ class PlotUtils:
     def __init__(
         self,
         figure_size: Tuple[float, float] = (4.5, 4.5),
-        font_size: int = 12,
+        font_size: int = 16,
         dpi: int = 150
     ):
         """Initialize plotting utilities.
@@ -34,9 +34,9 @@ class PlotUtils:
             'font.size': font_size,
             'axes.labelsize': font_size,
             'axes.titlesize': font_size,
-            'xtick.labelsize': font_size - 2,
-            'ytick.labelsize': font_size - 2,
-            'legend.fontsize': font_size - 2,
+            'xtick.labelsize': font_size,
+            'ytick.labelsize': font_size,
+            'legend.fontsize': font_size,
             'figure.figsize': figure_size,
             'figure.dpi': dpi,
         })
@@ -292,12 +292,12 @@ class PlotUtils:
                 0.05, 0.95, text,
                 transform=ax.transAxes,
                 verticalalignment='top',
-                fontsize=self.font_size - 2,
+                fontsize=self.font_size,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
             )
 
         ax.grid(True, alpha=0.3)
-        ax.legend(loc='lower right')
+        ax.legend(loc='best')
 
         plt.tight_layout()
 
@@ -428,7 +428,7 @@ class PlotUtils:
                     f"{int(val):,}",
                     ha='center',
                     va='bottom',
-                    fontsize=self.font_size - 2
+                    fontsize=self.font_size
                 )
             ax.set_ylim(0, max_val + pad * 6)
 
@@ -447,7 +447,7 @@ class PlotUtils:
                 transform=ax.transAxes,
                 ha='right',
                 va='top',
-                fontsize=self.font_size - 2,
+                fontsize=self.font_size,
                 bbox=dict(
                     boxstyle='round',
                     facecolor='white',

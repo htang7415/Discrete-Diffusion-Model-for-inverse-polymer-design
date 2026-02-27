@@ -287,5 +287,5 @@ polymer_classes:
 # Plotting
 plotting:
   figure_size: [4.5, 4.5]
-  font_size: 12
+  font_size: 16
   dpi: 600
