@@ -44,6 +44,7 @@ def compute_recall_at_k(
     if query_embeddings.size == 0 or ref_embeddings.size == 0:
         return {
             **{f"recall_at_{k}": 0.0 for k in ks},
+            "mean_cosine_sim_matched": 0.0,
             "matched_queries": 0,
             "total_queries": len(query_ids),
             "match_rate": 0.0,
@@ -60,6 +61,7 @@ def compute_recall_at_k(
     matched_queries = 0
     hits = {k: 0 for k in ks}
     max_k = max(ks)
+    cosine_sims: List[float] = []
 
     for start in range(0, total_queries, batch_size):
         end = min(start + batch_size, total_queries)
@@ -78,10 +80,12 @@ def compute_recall_at_k(
             for k in ks:
                 if any(idx in pos_indices for idx in topk[row, :k]):
                     hits[k] += 1
+            cosine_sims.append(float(scores[row, pos_indices].max()))
 
     denom = matched_queries if matched_queries > 0 else 1
     return {
         **{f"recall_at_{k}": round(hits[k] / denom, 4) for k in ks},
+        "mean_cosine_sim_matched": round(float(np.mean(cosine_sims)), 4) if cosine_sims else 0.0,
         "matched_queries": matched_queries,
         "total_queries": total_queries,
         "match_rate": round(matched_queries / max(total_queries, 1), 4),

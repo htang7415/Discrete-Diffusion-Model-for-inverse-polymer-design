@@ -86,11 +86,11 @@ alignment_e2e:
 
 # F1/F2/F3/F4/F5 pipeline toggles
 pipeline:
-  step1_alignment_mode: "frozen"  # none|frozen|e2e|both
-  step2_use_alignment: true
-  step3_use_alignment: true
-  step4_use_alignment: true
-  step5_use_alignment: true
+  step1_alignment_mode: "none"  # none|frozen|e2e|both
+  step2_use_alignment: false
+  step3_use_alignment: false
+  step4_use_alignment: false
+  step5_use_alignment: false
 
 # F1 embedding-figure args
 alignment_embeddings:
@@ -117,7 +117,7 @@ property:
   test_ratio: 0.1
   model_type: "mlp"
   views: null
-  use_alignment: true
+  use_alignment: false
   generate_figures: true
   hyperparameter_tuning:
     n_trials: 150
@@ -170,7 +170,7 @@ foundation_inverse:
   generate_figures: true
   ood_k: 5
   encoder_view: "selfies"  # F5 scoring backbone + fallback proposal view
-  use_alignment: true
+  use_alignment: false
   alignment_checkpoint: ""
 
 # F6 OOD-aware inverse args
@@ -206,7 +206,7 @@ ood_aware_inverse:
   normalization: "minmax"       # minmax|rank|none
   ood_k: 5
   compute_d2_distance_if_missing: true
-  use_alignment: true
+  use_alignment: false
   alignment_checkpoint: ""
   generate_figures: true
 

@@ -160,7 +160,8 @@ def _plot_f2_retrieval_heatmaps(metrics_df: pd.DataFrame, figures_dir: Path) -> 
 
     recall_cols = [c for c in df.columns if str(c).startswith("recall_at_")]
     recall_cols = sorted(recall_cols, key=lambda x: int(str(x).split("_")[-1]) if str(x).split("_")[-1].isdigit() else 0)
-    metric_cols = recall_cols + ["match_rate"]
+    cos_sim_cols = [c for c in df.columns if c == "mean_cosine_sim_matched"]
+    metric_cols = recall_cols + cos_sim_cols + ["match_rate"]
 
     # Scale panel size so 5×5 cell text remains legible
     n_views = len(views)
@@ -190,6 +191,58 @@ def _plot_f2_retrieval_heatmaps(metrics_df: pd.DataFrame, figures_dir: Path) -> 
 
     fig.tight_layout()
     _save_figure_png(fig, figures_dir / "figure_f2_retrieval_heatmaps")
+    plt.close(fig)
+
+
+def _plot_f2_cosine_sim_bars(metrics_df: pd.DataFrame, figures_dir: Path) -> None:
+    """Bar chart of mean cosine similarity per view pair, grouped by dataset."""
+    if plt is None or metrics_df.empty or "mean_cosine_sim_matched" not in metrics_df.columns:
+        return
+    df = metrics_df.copy()
+    parsed = df["view_pair"].astype(str).map(_parse_view_pair)
+    df = df.assign(_parsed=parsed)
+    df = df[df["_parsed"].notna()].copy()
+    if df.empty:
+        return
+    df[["src_dataset", "src_view", "tgt_dataset", "tgt_view"]] = pd.DataFrame(df["_parsed"].tolist(), index=df.index)
+    df = df[df["src_dataset"] == df["tgt_dataset"]].copy()
+    if df.empty:
+        return
+    df["pair_label"] = df["src_view"] + u"\u2192" + df["tgt_view"]
+
+    datasets = sorted(df["src_dataset"].astype(str).unique().tolist())
+    n_datasets = len(datasets)
+    if n_datasets == 0:
+        return
+
+    palette = ["#4E79A7", "#F28E2B", "#59A14F", "#E15759", "#B07AA1", "#76B7B2", "#FF9DA7", "#9C755F"]
+    fig, axes = plt.subplots(1, n_datasets, figsize=(max(6, 3.5 * n_datasets), 5.5), squeeze=False)
+
+    for col_idx, dataset in enumerate(datasets):
+        ax = axes[0, col_idx]
+        sub = df[df["src_dataset"] == dataset].sort_values("pair_label")
+        pairs = sub["pair_label"].tolist()
+        sims = pd.to_numeric(sub["mean_cosine_sim_matched"], errors="coerce").tolist()
+        bar_colors = [palette[i % len(palette)] for i in range(len(pairs))]
+        bars = ax.bar(range(len(pairs)), sims, color=bar_colors, alpha=0.88, width=0.6)
+        ax.set_xticks(range(len(pairs)))
+        ax.set_xticklabels(pairs, rotation=40, ha="right", fontsize=11)
+        ax.set_ylim(0.0, 1.05)
+        ax.set_ylabel("Mean Cosine Similarity (matched pairs)", fontsize=13)
+        ax.set_title(f"Dataset: {dataset}", fontsize=14)
+        ax.grid(axis="y", alpha=0.25)
+        ax.axhline(1.0, color="#aaaaaa", linewidth=0.8, linestyle="--")
+        for bar, val in zip(bars, sims):
+            if np.isfinite(val):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    float(val) + 0.012,
+                    f"{float(val):.3f}",
+                    ha="center", va="bottom", fontsize=10,
+                )
+
+    fig.tight_layout()
+    _save_figure_png(fig, figures_dir / "figure_f2_cosine_sim_bars")
     plt.close(fig)
 
 
@@ -329,6 +382,7 @@ def main(args):
         generate_figures = False
     if generate_figures:
         _plot_f2_retrieval_heatmaps(metrics_df, step_dirs["figures_dir"])
+        _plot_f2_cosine_sim_bars(metrics_df, step_dirs["figures_dir"])
 
     print(f"Saved metrics_alignment.csv to {results_dir}")
 

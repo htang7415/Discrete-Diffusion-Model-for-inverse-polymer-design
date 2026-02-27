@@ -337,7 +337,7 @@ if __name__ == "__main__":
     parser.set_defaults(use_faiss=None)
     parser.add_argument("--use_alignment", dest="use_alignment", action="store_true")
     parser.add_argument("--no_alignment", dest="use_alignment", action="store_false")
-    parser.set_defaults(use_alignment=True)
+    parser.set_defaults(use_alignment=False)
     parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
     parser.add_argument("--no_figures", dest="generate_figures", action="store_false")

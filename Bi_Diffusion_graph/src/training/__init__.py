@@ -1,13 +1,22 @@
-from .trainer_backbone import BackboneTrainer
-from .trainer_property import PropertyTrainer
-from .graph_trainer_backbone import GraphBackboneTrainer
-from .graph_trainer_property import GraphPropertyTrainer
+"""Training module exports with lazy loading."""
+
+from importlib import import_module
 
 __all__ = [
-    # Sequence-based trainers (legacy)
     "BackboneTrainer",
     "PropertyTrainer",
-    # Graph-based trainers
     "GraphBackboneTrainer",
     "GraphPropertyTrainer",
 ]
+
+
+def __getattr__(name):
+    if name == "BackboneTrainer":
+        return import_module(".trainer_backbone", __name__).BackboneTrainer
+    if name == "PropertyTrainer":
+        return import_module(".trainer_property", __name__).PropertyTrainer
+    if name == "GraphBackboneTrainer":
+        return import_module(".graph_trainer_backbone", __name__).GraphBackboneTrainer
+    if name == "GraphPropertyTrainer":
+        return import_module(".graph_trainer_property", __name__).GraphPropertyTrainer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

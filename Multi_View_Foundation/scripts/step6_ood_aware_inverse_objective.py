@@ -907,7 +907,7 @@ def main(args):
         constraint_properties = _parse_property_list(cfg_step6.get("constraint_properties"))
 
     if args.use_alignment is None:
-        use_alignment = _to_bool(cfg_step6.get("use_alignment", cfg_f5.get("use_alignment", True)), True)
+        use_alignment = _to_bool(cfg_step6.get("use_alignment", cfg_f5.get("use_alignment", False)), False)
     else:
         use_alignment = bool(args.use_alignment)
 
