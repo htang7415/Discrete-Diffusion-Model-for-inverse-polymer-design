@@ -662,8 +662,6 @@ def _compute_d2_distance_single_view(
     smiles_list: list[str],
     encoder_view: str,
     ood_k: int,
-    use_alignment: bool,
-    alignment_checkpoint: Optional[str],
 ) -> np.ndarray:
     if not smiles_list:
         return np.zeros((0,), dtype=np.float32)
@@ -687,33 +685,7 @@ def _compute_d2_distance_single_view(
     if embeddings.size == 0 or not kept_indices:
         return d2_full
 
-    if use_alignment:
-        view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
-        alignment_model = step5._load_alignment_model(
-            results_dir=results_dir,
-            view_dims={encoder_view: view_hidden_dim},
-            config=config,
-            checkpoint_override=alignment_checkpoint,
-        )
-        if alignment_model is None:
-            raise FileNotFoundError("Alignment checkpoint not found for OOD-aware objective with use_alignment=True")
-        projection_device = "cuda" if torch.cuda.is_available() else "cpu"
-        embeddings = step5._project_embeddings(alignment_model, encoder_view, embeddings, device=projection_device)
-
     d2_embeddings = step5._load_d2_embeddings(results_dir, encoder_view)
-    if use_alignment:
-        view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
-        alignment_model = step5._load_alignment_model(
-            results_dir=results_dir,
-            view_dims={encoder_view: view_hidden_dim},
-            config=config,
-            checkpoint_override=alignment_checkpoint,
-        )
-        if alignment_model is None:
-            raise FileNotFoundError("Alignment checkpoint not found for OOD-aware objective with use_alignment=True")
-        projection_device = "cuda" if torch.cuda.is_available() else "cpu"
-        d2_embeddings = step5._project_embeddings(alignment_model, encoder_view, d2_embeddings, device=projection_device)
-
     distances = knn_distances(embeddings, d2_embeddings, k=int(ood_k))
     mean_dist = distances.mean(axis=1).astype(np.float32, copy=False)
     for local_i, global_i in enumerate(kept_indices):
@@ -728,8 +700,6 @@ def _compute_d2_distance_column(
     smiles_list: list[str],
     ood_views: list[str],
     ood_k: int,
-    use_alignment: bool,
-    alignment_checkpoint: Optional[str],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], list[str]]:
     n = len(smiles_list)
     if n == 0:
@@ -745,8 +715,6 @@ def _compute_d2_distance_column(
                 smiles_list=smiles_list,
                 encoder_view=view,
                 ood_k=ood_k,
-                use_alignment=use_alignment,
-                alignment_checkpoint=alignment_checkpoint,
             )
         except FileNotFoundError as exc:
             print(f"[F6] Warning: skipping OOD view '{view}' ({exc})")
@@ -906,21 +874,6 @@ def main(args):
     if not constraint_properties:
         constraint_properties = _parse_property_list(cfg_step6.get("constraint_properties"))
 
-    if args.use_alignment is None:
-        use_alignment = _to_bool(cfg_step6.get("use_alignment", cfg_f5.get("use_alignment", False)), False)
-    else:
-        use_alignment = bool(args.use_alignment)
-
-    alignment_checkpoint = args.alignment_checkpoint
-    if alignment_checkpoint:
-        alignment_checkpoint = str(_resolve_path(alignment_checkpoint))
-    elif str(cfg_step6.get("alignment_checkpoint", "")).strip():
-        alignment_checkpoint = str(_resolve_path(str(cfg_step6.get("alignment_checkpoint", ""))))
-    elif str(cfg_f5.get("alignment_checkpoint", "")).strip():
-        alignment_checkpoint = str(_resolve_path(str(cfg_f5.get("alignment_checkpoint", ""))))
-    else:
-        alignment_checkpoint = None
-
     compute_if_missing = args.compute_d2_distance_if_missing
     if compute_if_missing is None:
         compute_if_missing = _to_bool(cfg_step6.get("compute_d2_distance_if_missing", True), True)
@@ -985,8 +938,6 @@ def main(args):
             smiles_list=smiles_list,
             ood_views=ood_views,
             ood_k=ood_k,
-            use_alignment=use_alignment,
-            alignment_checkpoint=alignment_checkpoint,
         )
         df["d2_distance"] = d2_values
         for view_name, values in d2_per_view.items():
@@ -1224,7 +1175,7 @@ def main(args):
         "ood_views_used": ",".join(ood_views_used),
         "ood_view_aggregation": "mean",
         "ood_k": int(ood_k),
-        "use_alignment_for_ood": bool(use_alignment),
+
         "d2_distance_source": d2_source,
         "candidate_scores_path": str(candidate_scores_path),
         "n_candidates_total": int(len(df)),
@@ -1325,7 +1276,7 @@ def main(args):
             "ood_views_used": ood_views_used,
             "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
-            "use_alignment_for_ood": bool(use_alignment),
+    
             "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
@@ -1359,7 +1310,7 @@ def main(args):
             "ood_views_used": ood_views_used,
             "ood_view_aggregation": "mean",
             "ood_k": int(ood_k),
-            "use_alignment_for_ood": bool(use_alignment),
+    
             "candidate_scores_path": str(candidate_scores_path),
             "d2_distance_source": d2_source,
         },
@@ -1416,10 +1367,6 @@ if __name__ == "__main__":
     parser.add_argument("--constraint_properties", type=str, default=None, help="Comma-separated soft-constraint properties.")
     parser.add_argument("--normalization", type=str, default=None, choices=["minmax", "rank", "none"])
     parser.add_argument("--ood_k", type=int, default=None)
-    parser.add_argument("--use_alignment", dest="use_alignment", action="store_true")
-    parser.add_argument("--no_alignment", dest="use_alignment", action="store_false")
-    parser.set_defaults(use_alignment=None)
-    parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--compute_d2_distance_if_missing", dest="compute_d2_distance_if_missing", action="store_true")
     parser.add_argument("--no_compute_d2_distance_if_missing", dest="compute_d2_distance_if_missing", action="store_false")
     parser.set_defaults(compute_d2_distance_if_missing=None)

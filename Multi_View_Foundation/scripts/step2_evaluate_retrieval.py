@@ -7,8 +7,7 @@ import sys
 
 import numpy as np
 import pandas as pd
-import torch
-from typing import Any, Optional
+from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BASE_DIR))
@@ -16,8 +15,6 @@ sys.path.insert(0, str(BASE_DIR))
 from src.utils.config import load_config, save_config
 from src.evaluation.retrieval_metrics import compute_recall_at_k
 from src.utils.output_layout import ensure_step_dirs, save_csv
-
-from src.model.multi_view_model import MultiViewModel
 
 try:  # pragma: no cover
     import matplotlib
@@ -263,37 +260,6 @@ def _load_view_index(results_dir: Path, view: str):
     return pd.read_csv(idx_path)
 
 
-def _load_alignment_model(results_dir: Path, view_dims: dict, config: dict, checkpoint_override: Optional[str]):
-    ckpt_path = _resolve_path(checkpoint_override) if checkpoint_override else results_dir / "step1_alignment" / "alignment_best.pt"
-    if not ckpt_path.exists():
-        return None
-    model_cfg = config.get("model", {})
-    model = MultiViewModel(
-        view_dims=view_dims,
-        projection_dim=int(model_cfg.get("projection_dim", 256)),
-        projection_hidden_dims=model_cfg.get("projection_hidden_dims"),
-        dropout=float(model_cfg.get("view_dropout", 0.0)),
-    )
-    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    model.eval()
-    return model
-
-
-def _project_embeddings(model: MultiViewModel, view: str, embeddings: np.ndarray, device: str, batch_size: int = 2048) -> np.ndarray:
-    if embeddings is None or embeddings.size == 0:
-        return embeddings
-    model.to(device)
-    model.eval()
-    outputs = []
-    with torch.no_grad():
-        for start in range(0, len(embeddings), batch_size):
-            batch = torch.tensor(embeddings[start:start + batch_size], device=device, dtype=torch.float32)
-            z = model.forward(view, batch)
-            outputs.append(z.cpu().numpy())
-    return np.concatenate(outputs, axis=0)
-
-
 def main(args):
     config = load_config(args.config)
     results_dir = _resolve_path(config["paths"]["results_dir"])
@@ -325,23 +291,6 @@ def main(args):
             view_data[view][dataset] = {"embeddings": emb, "ids": ids}
             view_dims[view] = emb.shape[1]
 
-    alignment_model = None
-    if args.use_alignment:
-        alignment_model = _load_alignment_model(results_dir, view_dims, config, args.alignment_checkpoint)
-        if alignment_model is None:
-            raise FileNotFoundError("Alignment checkpoint not found for --use_alignment")
-
-    if alignment_model is not None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        for view, datasets in view_data.items():
-            for dataset in datasets:
-                datasets[dataset]["embeddings"] = _project_embeddings(
-                    alignment_model,
-                    view,
-                    datasets[dataset]["embeddings"],
-                    device=device,
-                )
-
     rows = []
     for dataset in ["d1", "d2"]:
         available_views = [v for v in views if dataset in view_data.get(v, {})]
@@ -361,7 +310,7 @@ def main(args):
                 )
                 rows.append({
                     "view_pair": f"{dataset}_{src_view}->{dataset}_{tgt_view}",
-                    "view_dropout_mode": "aligned" if alignment_model is not None else "none",
+                    "view_dropout_mode": "none",
                     **metrics,
                 })
 
@@ -390,8 +339,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
-    parser.add_argument("--use_alignment", action="store_true")
-    parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
     parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
     parser.set_defaults(generate_figures=None)

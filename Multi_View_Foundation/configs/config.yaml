@@ -5,18 +5,16 @@
 #   paths.data_dir, paths.polymer_file, paths.polymer_file_d2, paths.paired_index
 #   data.random_seed, data.max_samples_d1, data.max_samples_d2
 #   alignment_views, views.*
-# F1 alignment embeddings / alignment training:
+# F1 embedding extraction:
 #   alignment_views, views.*, *_encoder.*
-#   model.*, training.*, alignment_training.*, alignment_e2e.*
-#   pipeline.step1_alignment_mode
 # F2 retrieval evaluation:
-#   evaluation.*, pipeline.step2_use_alignment
+#   evaluation.*
 # F3 property heads:
-#   property.*, pipeline.step3_use_alignment
+#   property.*
 # F4 OOD analysis:
-#   ood.*, pipeline.step4_use_alignment
+#   ood.*
 # F5 foundation inverse (resample):
-#   foundation_inverse.*, pipeline.step5_use_alignment
+#   foundation_inverse.*
 # F6 OOD-aware inverse objective:
 #   ood_aware_inverse.*
 # F7 chemistry/physics analysis:
@@ -52,46 +50,6 @@ views:
   graph:
     enabled: true
 
-# F1 alignment model + optimization args
-model:
-  projection_dim: 384  # default for small; run_pipeline.sh aligns with 9-method backbone sizes: 384/640/960/1280
-  projection_hidden_dims: [768]  # default for small; presets: [768],[1280],[1920],[2560]
-  view_dropout: 0.3
-  temperature: 0.07
-
-training:
-  batch_size: 512
-  learning_rate: 1.0e-4
-  max_steps: 200000
-  warmup_steps: 2000
-
-alignment_training:
-  batch_size: 256
-  learning_rate: 1.0e-3
-  weight_decay: 0.0
-  max_epochs: 10
-  val_ratio: 0.1
-  log_every: 50
-  datasets: ["d1", "d2"]
-
-alignment_e2e:
-  batch_size: 64
-  learning_rate: 1.0e-5
-  weight_decay: 0.01
-  max_epochs: 3
-  val_ratio: 0.05
-  log_every: 50
-  datasets: ["d1", "d2"]
-  max_samples: null
-
-# F1/F2/F3/F4/F5 pipeline toggles
-pipeline:
-  step1_alignment_mode: "none"  # none|frozen|e2e|both
-  step2_use_alignment: false
-  step3_use_alignment: false
-  step4_use_alignment: false
-  step5_use_alignment: false
-
 # F1 embedding-figure args
 alignment_embeddings:
   generate_figures: true
@@ -117,7 +75,6 @@ property:
   test_ratio: 0.1
   model_type: "mlp"
   views: null
-  use_alignment: false
   generate_figures: true
   hyperparameter_tuning:
     n_trials: 150
@@ -149,7 +106,7 @@ foundation_inverse:
   sampling_num_per_batch: 512
   sampling_batch_size: 128
   sampling_max_batches: 1000
-  proposal_views: ["selfies"]
+  proposal_views: ["selfies"]   # which diffusion backbone(s) generate candidate molecules; list of views or "all"
   sampling_temperature: null
   sampling_num_atoms: null
   # Optional comma-separated class filter. Supported classes:
@@ -163,22 +120,20 @@ foundation_inverse:
   max_sa: 4.5
   per_view_min_hits: 2
   per_view_quota_relax_after_batches: 12
-  property_model_mode: "single"
-  property_model_path: ""
+  property_model_mode: "single"     # single: use one MLP (encoder_view's); all: ensemble all view MLPs (committee)
+  property_model_path: ""           # explicit MLP path; auto-resolved from step3 results if empty (single mode only)
   rerank_strategy: "d2_distance"
   rerank_top_k: 100
   generate_figures: true
   ood_k: 5
-  encoder_view: "selfies"  # F5 scoring backbone + fallback proposal view
-  use_alignment: false
-  alignment_checkpoint: ""
+  encoder_view: "smiles"           # backbone used to embed candidates for property scoring and D2 OOD distance
 
 # F6 OOD-aware inverse args
 ood_aware_inverse:
   enabled: true
   run_all_properties: true
-  encoder_view: ""
-  ood_views: "all"
+  encoder_view: ""              # backbone for D2 OOD distance; empty => inherits from foundation_inverse.encoder_view
+  ood_views: "all"              # views used to compute per-view D2 distances, then averaged; "all" or comma-separated list
   property: "Tg, Tm, Td, Eg"
   target: null
   target_mode: ""
@@ -206,8 +161,6 @@ ood_aware_inverse:
   normalization: "minmax"       # minmax|rank|none
   ood_k: 5
   compute_d2_distance_if_missing: true
-  use_alignment: false
-  alignment_checkpoint: ""
   generate_figures: true
 
 # F7 chemistry/physics analysis args

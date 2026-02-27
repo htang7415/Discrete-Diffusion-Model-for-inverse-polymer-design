@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""F1: Extract backbone embeddings for multiple views (initial implementation)."""
+"""F1: Extract backbone embeddings for multiple views."""
 
 import argparse
 import json
@@ -13,7 +13,6 @@ from typing import Any, List
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import ConcatDataset
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BASE_DIR.parent
@@ -22,11 +21,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.config import load_config, save_config
 from src.data.view_converters import smiles_to_selfies
-from src.data.paired_dataset import load_view_embeddings, EmbeddingPairDataset
-from src.data.alignment_dataset import MultiViewAlignmentDataset, collate_alignment_batch
-from src.model.multi_view_model import MultiViewModel
-from src.model.multi_view_e2e import MultiViewE2EModel
-from src.training.contrastive_trainer import ContrastiveTrainer, TrainerConfig, EndToEndContrastiveTrainer
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json, save_numpy
 
 try:  # pragma: no cover
@@ -639,171 +633,6 @@ def _ensure_selfies_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _train_frozen_alignment(results_dir: Path, views: list, config: dict, device: str) -> None:
-    if len(views) < 2:
-        print("Need at least two views for alignment; skipping frozen alignment.")
-        return
-
-    train_cfg = config.get("alignment_training", {})
-    datasets = train_cfg.get("datasets", ["d1"])
-
-    combined_embeddings = {}
-    combined_ids = {}
-    for dataset_name in datasets:
-        emb, ids = load_view_embeddings(results_dir, views, dataset=dataset_name)
-        for view, arr in emb.items():
-            combined_embeddings.setdefault(view, []).append(arr)
-            combined_ids.setdefault(view, []).extend(ids.get(view, []))
-
-    view_embeddings = {
-        view: np.concatenate(chunks, axis=0)
-        for view, chunks in combined_embeddings.items()
-        if chunks
-    }
-    view_ids = {view: combined_ids.get(view, []) for view in view_embeddings}
-
-    if len(view_embeddings) < 2:
-        print("Not enough view embeddings found for alignment training.")
-        return
-
-    dataset = EmbeddingPairDataset(view_embeddings, view_ids)
-    if len(dataset) == 0:
-        print("No overlapping polymer_ids across views; skipping alignment training.")
-        return
-
-    view_dims = {view: emb.shape[1] for view, emb in view_embeddings.items()}
-    model_cfg = config.get("model", {})
-    model = MultiViewModel(
-        view_dims=view_dims,
-        projection_dim=int(model_cfg.get("projection_dim", 256)),
-        projection_hidden_dims=model_cfg.get("projection_hidden_dims"),
-        dropout=float(model_cfg.get("view_dropout", 0.0)),
-    )
-
-    trainer_cfg = TrainerConfig(
-        batch_size=int(train_cfg.get("batch_size", 256)),
-        learning_rate=float(train_cfg.get("learning_rate", 1.0e-3)),
-        weight_decay=float(train_cfg.get("weight_decay", 0.0)),
-        max_epochs=int(train_cfg.get("max_epochs", 10)),
-        temperature=float(model_cfg.get("temperature", 0.07)),
-        view_dropout=float(model_cfg.get("view_dropout", 0.0)),
-        val_ratio=float(train_cfg.get("val_ratio", 0.1)),
-        log_every=int(train_cfg.get("log_every", 50)),
-    )
-
-    alignment_dir = results_dir / "step1_alignment"
-    alignment_dir.mkdir(parents=True, exist_ok=True)
-    trainer = ContrastiveTrainer(
-        model=model,
-        dataset=dataset,
-        config=trainer_cfg,
-        device=device,
-        output_dir=alignment_dir,
-    )
-    trainer.train()
-
-
-def _train_e2e_alignment(
-    results_dir: Path,
-    paired_index_path: Path,
-    views: list,
-    config: dict,
-    view_specs: dict,
-    device: str,
-) -> None:
-    if len(views) < 2:
-        print("Need at least two views for alignment; skipping end-to-end alignment.")
-        return
-
-    train_cfg = config.get("alignment_e2e", {})
-    datasets = train_cfg.get("datasets", ["d1"])
-    max_samples = train_cfg.get("max_samples")
-
-    view_backbones = {}
-    view_dims = {}
-    view_tokenizers = {}
-    view_timesteps = {}
-
-    for view in views:
-        spec = view_specs.get(view)
-        if not spec:
-            continue
-        encoder_cfg = config.get(spec["encoder_key"], {})
-        if spec["type"] == "sequence":
-            assets = _load_sequence_backbone(
-                encoder_cfg=encoder_cfg,
-                device=device,
-                tokenizer_module=spec["tokenizer_module"],
-                tokenizer_class=spec["tokenizer_class"],
-                tokenizer_filename=spec["tokenizer_file"],
-            )
-        else:
-            assets = _load_graph_backbone(encoder_cfg=encoder_cfg, device=device)
-
-        assets["backbone"].train()
-        view_tokenizers[view] = assets["tokenizer"]
-        view_backbones[view] = assets["backbone"]
-        view_dims[view] = int(assets["backbone"].hidden_size)
-        view_timesteps[view] = int(encoder_cfg.get("timestep", 1))
-
-    if len(view_backbones) < 2:
-        print("Not enough view backbones found for end-to-end alignment.")
-        return
-
-    datasets_list = []
-    for dataset_name in datasets:
-        dataset_filter = dataset_name if dataset_name not in ("all", "both", None, "") else None
-        dataset = MultiViewAlignmentDataset(
-            paired_index=paired_index_path,
-            views=list(view_backbones.keys()),
-            tokenizers=view_tokenizers,
-            dataset_filter=dataset_filter,
-            max_samples=max_samples,
-        )
-        if len(dataset) > 0:
-            datasets_list.append(dataset)
-
-    if not datasets_list:
-        print("No alignment datasets available; skipping end-to-end alignment.")
-        return
-
-    combined_dataset = datasets_list[0] if len(datasets_list) == 1 else ConcatDataset(datasets_list)
-
-    model_cfg = config.get("model", {})
-    model = MultiViewE2EModel(
-        view_backbones=view_backbones,
-        view_dims=view_dims,
-        projection_dim=int(model_cfg.get("projection_dim", 256)),
-        projection_hidden_dims=model_cfg.get("projection_hidden_dims"),
-        dropout=float(model_cfg.get("view_dropout", 0.0)),
-        timesteps=view_timesteps,
-    )
-
-    trainer_cfg = TrainerConfig(
-        batch_size=int(train_cfg.get("batch_size", 64)),
-        learning_rate=float(train_cfg.get("learning_rate", 1.0e-5)),
-        weight_decay=float(train_cfg.get("weight_decay", 0.01)),
-        max_epochs=int(train_cfg.get("max_epochs", 3)),
-        temperature=float(model_cfg.get("temperature", 0.07)),
-        view_dropout=float(model_cfg.get("view_dropout", 0.0)),
-        val_ratio=float(train_cfg.get("val_ratio", 0.05)),
-        log_every=int(train_cfg.get("log_every", 50)),
-    )
-
-    alignment_dir = results_dir / "step1_alignment_e2e"
-    alignment_dir.mkdir(parents=True, exist_ok=True)
-    trainer = EndToEndContrastiveTrainer(
-        model=model,
-        dataset=combined_dataset,
-        config=trainer_cfg,
-        device=device,
-        output_dir=alignment_dir,
-        collate_fn=collate_alignment_batch,
-        required_views=list(view_backbones.keys()),
-    )
-    trainer.train()
-
-
 def main(args):
     config = load_config(args.config)
     results_dir = _resolve_path(config["paths"]["results_dir"])
@@ -1026,26 +855,12 @@ def main(args):
         print(f"Saved embeddings for {view} to {emb_d1_path} and {emb_d2_path}")
         active_views.append(view)
 
-    if args.train_alignment:
-        print("\nTraining frozen alignment projection heads...")
-        _train_frozen_alignment(results_dir, active_views, config, device)
-
-    if args.train_alignment_e2e:
-        print("\nTraining end-to-end alignment (fine-tuning backbones)...")
-        _train_e2e_alignment(results_dir, paired_index_path, active_views, config, view_specs, device)
-
     _generate_f1_figures(results_dir=results_dir, step_dirs=step_dirs, cfg_f1=cfg_f1, args=args)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
-    parser.add_argument("--train_alignment", action="store_true", help="Train projection heads on view embeddings.")
-    parser.add_argument(
-        "--train_alignment_e2e",
-        action="store_true",
-        help="Fine-tune view backbones end-to-end with contrastive alignment.",
-    )
     parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
     parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
     parser.set_defaults(generate_figures=None)

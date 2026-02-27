@@ -23,7 +23,6 @@ sys.path.insert(0, str(REPO_ROOT))
 from src.utils.config import load_config, save_config
 from src.data.view_converters import smiles_to_selfies
 from shared.ood_metrics import knn_distances
-from src.model.multi_view_model import MultiViewModel
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json
 
 try:
@@ -976,37 +975,6 @@ def _load_module(module_name: str, path: Path):
     return module
 
 
-def _load_alignment_model(results_dir: Path, view_dims: dict, config: dict, checkpoint_override: Optional[str]):
-    ckpt_path = _resolve_path(checkpoint_override) if checkpoint_override else results_dir / "step1_alignment" / "alignment_best.pt"
-    if not ckpt_path.exists():
-        return None
-    model_cfg = config.get("model", {})
-    model = MultiViewModel(
-        view_dims=view_dims,
-        projection_dim=int(model_cfg.get("projection_dim", 256)),
-        projection_hidden_dims=model_cfg.get("projection_hidden_dims"),
-        dropout=float(model_cfg.get("view_dropout", 0.0)),
-    )
-    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-    model.eval()
-    return model
-
-
-def _project_embeddings(model: MultiViewModel, view: str, embeddings: np.ndarray, device: str, batch_size: int = 2048) -> np.ndarray:
-    if embeddings is None or embeddings.size == 0:
-        return embeddings
-    model.to(device)
-    model.eval()
-    outputs = []
-    with torch.no_grad():
-        for start in range(0, len(embeddings), batch_size):
-            batch = torch.tensor(embeddings[start:start + batch_size], device=device, dtype=torch.float32)
-            z = model.forward(view, batch)
-            outputs.append(z.cpu().numpy())
-    return np.concatenate(outputs, axis=0)
-
-
 def _load_sequence_backbone(
     encoder_cfg: dict,
     device: str,
@@ -1475,8 +1443,6 @@ def _build_prediction_columns_from_all_models(
     results_dir: Path,
     smiles_list: List[str],
     model_paths: Dict[str, Path],
-    use_alignment: bool,
-    alignment_checkpoint: Optional[str],
 ) -> Dict[str, Any]:
     n = len(smiles_list)
     if n == 0:
@@ -1509,18 +1475,6 @@ def _build_prediction_columns_from_all_models(
             assets=assets,
             device=device,
         )
-        if embeddings.size and use_alignment:
-            view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
-            alignment_model = _load_alignment_model(
-                results_dir=results_dir,
-                view_dims={view: view_hidden_dim},
-                config=config,
-                checkpoint_override=alignment_checkpoint,
-            )
-            if alignment_model is None:
-                raise FileNotFoundError("Alignment checkpoint not found for all-model F5 scoring with use_alignment=True")
-            projection_device = "cuda" if torch.cuda.is_available() else "cpu"
-            embeddings = _project_embeddings(alignment_model, view, embeddings, device=projection_device)
         packed = {
             "embeddings": embeddings,
             "kept_indices": [int(i) for i in kept_indices],
@@ -2007,7 +1961,6 @@ def _resample_candidates_until_target(
     scoring_assets: dict,
     scoring_device: str,
     property_model,
-    alignment_model,
     training_set: set,
     target_value: float,
     epsilon: float,
@@ -2097,8 +2050,6 @@ def _resample_candidates_until_target(
         sampling_temperature=sampling_temperature,
         sampling_num_atoms=sampling_num_atoms,
     )
-    projection_device = "cuda" if torch.cuda.is_available() else "cpu"
-
     stats = Counter()
     scored_records: List[dict] = []
     scored_embeddings: List[np.ndarray] = []
@@ -2298,9 +2249,6 @@ def _resample_candidates_until_target(
             stats["reject_embed"] += dropped
             stats[f"reject_embed_{proposal_view}"] += dropped
 
-        if embeddings.size and alignment_model is not None:
-            embeddings = _project_embeddings(alignment_model, scoring_view, embeddings, device=projection_device)
-
         if embeddings.size == 0:
             print(
                 f"[F5 resample] batch={batch_idx} generated={len(batch_smiles)} prefilter={len(prefilter_smiles)} scored=0 accepted={accepted}/{sampling_target}"
@@ -2463,14 +2411,6 @@ def main(args):
 
     encoder_device = _resolve_view_device(config, encoder_view)
     assets = _load_view_assets(config=config, view=encoder_view, device=encoder_device)
-    view_hidden_dim = int(getattr(assets["backbone"], "hidden_size", 0)) or int(config.get("model", {}).get("projection_dim", 256))
-
-    alignment_model = None
-    if args.use_alignment:
-        view_dims = {encoder_view: view_hidden_dim}
-        alignment_model = _load_alignment_model(results_dir, view_dims, config, args.alignment_checkpoint)
-        if alignment_model is None:
-            raise FileNotFoundError("Alignment checkpoint not found for --use_alignment")
 
     property_model_mode = args.property_model_mode
     if property_model_mode is None:
@@ -2513,7 +2453,6 @@ def main(args):
         scoring_assets=assets,
         scoring_device=encoder_device,
         property_model=model,
-        alignment_model=alignment_model,
         training_set=training_set,
         target_value=target_value,
         epsilon=epsilon,
@@ -2572,8 +2511,6 @@ def main(args):
                 results_dir=results_dir,
                 smiles_list=smiles_for_committee,
                 model_paths=all_model_paths,
-                use_alignment=bool(args.use_alignment),
-                alignment_checkpoint=args.alignment_checkpoint,
             )
             if not pred_pack["prediction_by_model"]:
                 if committee_prop == args.property:
@@ -2693,9 +2630,6 @@ def main(args):
 
     if args.rerank_strategy == "d2_distance" and scored_embeddings is not None and len(scored_smiles):
         d2_embeddings = _load_d2_embeddings(results_dir, encoder_view)
-        if args.use_alignment and alignment_model is not None:
-            device_proj = "cuda" if torch.cuda.is_available() else "cpu"
-            d2_embeddings = _project_embeddings(alignment_model, encoder_view, d2_embeddings, device=device_proj)
         distances = knn_distances(scored_embeddings, d2_embeddings, k=args.ood_k)
         d2_distance_scores = distances.mean(axis=1)
         order = np.argsort(d2_distance_scores)
@@ -2872,7 +2806,6 @@ def main(args):
             "epsilon": epsilon,
             "rerank_strategy": args.rerank_strategy,
             "rerank_top_k": int(args.rerank_top_k),
-            "use_alignment": bool(args.use_alignment),
             "n_generated": int(n_generated),
             "n_structurally_valid": int(n_valid),
             "n_scored": int(n_scored),
@@ -2894,7 +2827,6 @@ def main(args):
             "epsilon": epsilon,
             "rerank_strategy": args.rerank_strategy,
             "rerank_top_k": int(args.rerank_top_k),
-            "use_alignment": bool(args.use_alignment),
             "n_generated": int(n_generated),
             "n_structurally_valid": int(n_valid),
             "n_scored": int(n_scored),
@@ -2976,8 +2908,6 @@ if __name__ == "__main__":
     parser.add_argument("--rerank_strategy", type=str, default="d2_distance")
     parser.add_argument("--rerank_top_k", type=int, default=100)
     parser.add_argument("--ood_k", type=int, default=5)
-    parser.add_argument("--use_alignment", action="store_true")
-    parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--generate_figures", dest="generate_figures", action="store_true")
     parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
     parser.set_defaults(generate_figures=None)

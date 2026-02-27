@@ -37,7 +37,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from src.utils.config import load_config, save_config
 from src.data.view_converters import smiles_to_selfies
-from src.model.multi_view_model import MultiViewModel
 from src.utils.output_layout import ensure_step_dirs, save_csv, save_json
 
 
@@ -1458,20 +1457,6 @@ def _save_mlp_bundle_with_legacy(model_path: Path, bundle: dict, legacy_paths: O
         _save_mlp_bundle(path, bundle)
 
 
-def _project_embeddings(model: MultiViewModel, view: str, embeddings: np.ndarray, device: str, batch_size: int = 2048) -> np.ndarray:
-    if embeddings.size == 0:
-        return embeddings
-    model.to(device)
-    model.eval()
-    outputs = []
-    with torch.no_grad():
-        for start in range(0, len(embeddings), batch_size):
-            batch = torch.tensor(embeddings[start:start + batch_size], device=device, dtype=torch.float32)
-            z = model.forward(view, batch)
-            outputs.append(z.cpu().numpy())
-    return np.concatenate(outputs, axis=0)
-
-
 def main(args):
     config = load_config(args.config)
     results_dir = _resolve_path(config["paths"]["results_dir"])
@@ -1623,32 +1608,6 @@ def main(args):
     if not view_assets:
         raise RuntimeError("No valid views configured for property prediction.")
 
-    if args.use_alignment is None:
-        use_alignment = bool(prop_cfg.get("use_alignment", False))
-    else:
-        use_alignment = bool(args.use_alignment)
-    alignment_model = None
-    if use_alignment:
-        ckpt_path = args.alignment_checkpoint
-        if ckpt_path:
-            ckpt_path = _resolve_path(ckpt_path)
-        else:
-            ckpt_path = results_dir / "step1_alignment" / "alignment_best.pt"
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Alignment checkpoint not found: {ckpt_path}")
-        view_dims = {view: view_assets[view]["backbone"].hidden_size for view in view_assets}
-        model_cfg = config.get("model", {})
-        alignment_model = MultiViewModel(
-            view_dims=view_dims,
-            projection_dim=int(model_cfg.get("projection_dim", 256)),
-            projection_hidden_dims=model_cfg.get("projection_hidden_dims"),
-            dropout=float(model_cfg.get("view_dropout", 0.0)),
-        )
-        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-        alignment_model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-        alignment_model.to(device)
-        alignment_model.eval()
-
     train_ratio = float(prop_cfg.get("train_ratio", 0.8))
     val_ratio = float(prop_cfg.get("val_ratio", 0.1))
     test_ratio = float(prop_cfg.get("test_ratio", 0.1))
@@ -1742,14 +1701,10 @@ def main(args):
                             invalid.add(smi)
                     if seq_inputs:
                         new_emb = _embed_sequence(seq_inputs, assets, device)
-                        if use_alignment and alignment_model is not None:
-                            new_emb = _project_embeddings(alignment_model, view, new_emb, device)
                         for i, smi in enumerate(seq_smiles):
                             cache[smi] = new_emb[i]
                 elif view == "graph":
                     new_emb, valid_indices = _embed_graph(unique_missing, assets, device)
-                    if use_alignment and alignment_model is not None and new_emb.size:
-                        new_emb = _project_embeddings(alignment_model, view, new_emb, device)
                     valid_set = set(valid_indices)
                     emb_row = 0
                     for i, smi in enumerate(unique_missing):
@@ -1760,8 +1715,6 @@ def main(args):
                             invalid.add(smi)
                 else:
                     new_emb = _embed_sequence(unique_missing, assets, device)
-                    if use_alignment and alignment_model is not None:
-                        new_emb = _project_embeddings(alignment_model, view, new_emb, device)
                     for i, smi in enumerate(unique_missing):
                         cache[smi] = new_emb[i]
 
@@ -1870,7 +1823,6 @@ def main(args):
                     "model_type": "mlp",
                     "hpo_trials": int(mlp_hpo_cfg.get("n_trials", 100)),
                     "hpo_best": hpo_best,
-                    "use_alignment": use_alignment,
                     "model_path": str(model_path),
                     "hpo_trials_path": str(trial_path),
                 },
@@ -1969,7 +1921,6 @@ def main(args):
                             "model_type": "mlp",
                             "hpo_trials": int(mlp_hpo_cfg.get("n_trials", 100)),
                             "hpo_best": hpo_best,
-                            "use_alignment": use_alignment,
                             "model_path": str(model_path),
                             "hpo_trials_path": str(trial_path),
                         },
@@ -2018,9 +1969,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/config.yaml")
-    parser.add_argument("--use_alignment", dest="use_alignment", action="store_true")
-    parser.add_argument("--no_alignment", dest="use_alignment", action="store_false")
-    parser.set_defaults(use_alignment=None)
     parser.add_argument("--tune", dest="tune", action="store_true")
     parser.add_argument("--no_tune", dest="tune", action="store_false")
     parser.set_defaults(tune=None)
@@ -2028,6 +1976,5 @@ if __name__ == "__main__":
     parser.add_argument("--no_figures", dest="generate_figures", action="store_false")
     parser.set_defaults(generate_figures=None)
     parser.add_argument("--figures_only", action="store_true", help="Regenerate F3 figures from existing metrics/models without retraining.")
-    parser.add_argument("--alignment_checkpoint", type=str, default=None)
     parser.add_argument("--views", type=str, default=None, help="comma-separated list of views")
     main(parser.parse_args())
